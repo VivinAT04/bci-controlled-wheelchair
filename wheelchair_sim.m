@@ -9,8 +9,8 @@
 %   - Emergency stop: any "Stop" command halts movement immediately
 %     regardless of position.
 %
-% Run this script from MATLAB with the working folder set to the
-% project root (so the relative path to the CSV resolves correctly).
+% This script locates the CSV relative to its own file location, so it
+% works correctly regardless of MATLAB's current working folder.
 
 clear; clc; close all;
 
@@ -25,7 +25,11 @@ obstacles = false(GRID_SIZE, GRID_SIZE);
 obstacles(5, 8:14) = true;     % a wall the chair must not cross
 
 %% --- Load predicted commands from Python classifier output ---
-csv_path = fullfile('results', 'predicted_commands.csv');
+% mfilename('fullpath') reliably returns THIS script's own location,
+% regardless of MATLAB's current folder or editor UI focus state.
+script_dir = fileparts(mfilename('fullpath'));
+csv_path = fullfile(script_dir, 'results', 'predicted_commands.csv');
+
 if ~isfile(csv_path)
     error('Cannot find %s. Run scripts/export_predictions.py first.', csv_path);
 end
