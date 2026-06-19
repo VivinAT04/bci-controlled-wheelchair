@@ -12,13 +12,17 @@ from sklearn.model_selection import LeaveOneOut, cross_val_predict
 from sklearn.metrics import accuracy_score, cohen_kappa_score, confusion_matrix
 from mne.decoding import CSP
 
-from bci_wheelchair.data_loading import load_subject_local
+from bci_wheelchair.data_loading import load_raw_gdf
+from bci_wheelchair.preprocessing import preprocess_raw
 
 
 def main():
 
     print("Loading A01T...")
-    X, y = load_subject_local("data/raw/A01T.gdf")
+
+    raw = load_raw_gdf("data/raw/A01T.gdf")
+    X, y = preprocess_raw(raw)
+    
 
     print(
         f"Loaded {X.shape[0]} trials, "
