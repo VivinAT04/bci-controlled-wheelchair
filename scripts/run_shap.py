@@ -38,6 +38,11 @@ CSV_OUTPUT = "results/shap_fbcsp_feature_importance.csv"
 
 
 def build_feature_names():
+    """
+    Build feature names matching FBCSP output order.
+    Each frequency band produces N_COMPONENTS CSP features.
+    """
+
     feature_names = []
 
     for lo, hi in DEFAULT_BANDS:
@@ -47,28 +52,31 @@ def build_feature_names():
     return feature_names
 
 
-def prepare_shap_values(shap_values):
+def prepare_signed_shap_values(shap_values):
     """
-    Convert SHAP output into one matrix:
+    Convert SHAP output into one signed matrix:
     samples × features.
 
-    For multiclass output, average absolute SHAP values across classes.
+    For multiclass output, average signed SHAP values across classes.
+
+    Signed SHAP values are required for beeswarm plots because
+    they show whether a feature pushes the prediction up or down.
     """
 
     if isinstance(shap_values, list):
-        return np.mean(np.abs(np.array(shap_values)), axis=0)
+        return np.mean(np.array(shap_values), axis=0)
 
     shap_values = np.array(shap_values)
 
     if shap_values.ndim == 3:
-        return np.mean(np.abs(shap_values), axis=2)
+        return np.mean(shap_values, axis=2)
 
-    return np.abs(shap_values)
+    return shap_values
 
 
 def main():
     print("\n========================================")
-    print("Improved SHAP Explainability for FBCSP + LDA")
+    print("SHAP Explainability for FBCSP + LDA")
     print("========================================")
 
     print(f"\nLoading {SUBJECT}...")
@@ -104,6 +112,12 @@ def main():
     print(f"FBCSP feature shape: {X_train_features.shape}")
     print(f"Number of feature names: {len(feature_names)}")
 
+    if X_train_features.shape[1] != len(feature_names):
+        raise ValueError(
+            f"Feature mismatch: FBCSP produced {X_train_features.shape[1]} features, "
+            f"but {len(feature_names)} feature names were created."
+        )
+
     print("\nRunning SHAP KernelExplainer on LDA classifier...")
 
     background = shap.sample(
@@ -120,9 +134,11 @@ def main():
     )
 
     raw_shap_values = explainer.shap_values(X_explain)
-    shap_importance_matrix = prepare_shap_values(raw_shap_values)
 
-    mean_abs_importance = np.mean(shap_importance_matrix, axis=0)
+    signed_shap_matrix = prepare_signed_shap_values(raw_shap_values)
+
+    importance_matrix = np.abs(signed_shap_matrix)
+    mean_abs_importance = np.mean(importance_matrix, axis=0)
 
     importance_df = pd.DataFrame(
         {
@@ -153,12 +169,10 @@ def main():
 
     print(f"SHAP bar plot saved to: {BAR_OUTPUT}")
 
-    print("\nGenerating SHAP beeswarm-style summary plot...")
-
-    plt.figure(figsize=(10, 7))
+    print("\nGenerating SHAP beeswarm summary plot...")
 
     shap.summary_plot(
-        shap_importance_matrix,
+        signed_shap_matrix,
         X_explain,
         feature_names=feature_names,
         max_display=15,
