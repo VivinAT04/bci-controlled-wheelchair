@@ -4,6 +4,7 @@ import numpy as np
 from mne.decoding import CSP
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
+from sklearn.feature_selection import SelectPercentile, f_classif
 from sklearn.pipeline import Pipeline
 
 from .preprocessing import SFREQ, bandpass
@@ -24,6 +25,18 @@ def make_csp_lda(n_components: int = 6) -> Pipeline:
     """Baseline pipeline: single-band CSP followed by LDA."""
     return Pipeline([
         ("csp", CSP(n_components=n_components, reg=None, log=True)),
+        ("lda", LDA()),
+    ])
+
+
+def make_csp_feature_selected_lda(
+    n_components: int = 6,
+    percentile: int = 80,
+) -> Pipeline:
+    """Single-band CSP + feature selection + LDA."""
+    return Pipeline([
+        ("csp", CSP(n_components=n_components, reg=None, log=True)),
+        ("select", SelectPercentile(score_func=f_classif, percentile=percentile)),
         ("lda", LDA()),
     ])
 
@@ -61,6 +74,19 @@ def make_fbcsp_lda(n_components: int = 4, bands=None) -> Pipeline:
     """Filter-Bank CSP followed by LDA."""
     return Pipeline([
         ("fbcsp", FilterBankCSP(n_components=n_components, bands=bands)),
+        ("lda", LDA()),
+    ])
+
+
+def make_fbcsp_feature_selected_lda(
+    n_components: int = 4,
+    bands=None,
+    percentile: int = 80,
+) -> Pipeline:
+    """Filter-Bank CSP + feature selection + LDA."""
+    return Pipeline([
+        ("fbcsp", FilterBankCSP(n_components=n_components, bands=bands)),
+        ("select", SelectPercentile(score_func=f_classif, percentile=percentile)),
         ("lda", LDA()),
     ])
 
