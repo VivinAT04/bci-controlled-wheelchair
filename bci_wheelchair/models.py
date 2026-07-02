@@ -1,4 +1,4 @@
-"""Classifier pipelines: CSP+LDA baseline and Filter-Bank CSP+LDA."""
+"""Classifier pipelines: CSP+LDA, FBCSP+LDA, and nonlinear SVM models."""
 
 import numpy as np
 from mne.decoding import CSP
@@ -6,8 +6,10 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.feature_selection import SelectPercentile, f_classif
 from sklearn.pipeline import Pipeline
+from sklearn.svm import SVC
 
 from .preprocessing import SFREQ, bandpass
+
 
 DEFAULT_BANDS = [
     (4, 8),
@@ -38,6 +40,44 @@ def make_csp_feature_selected_lda(
         ("csp", CSP(n_components=n_components, reg=None, log=True)),
         ("select", SelectPercentile(score_func=f_classif, percentile=percentile)),
         ("lda", LDA()),
+    ])
+
+
+def make_csp_svm(
+    n_components: int = 6,
+    C: float = 1.0,
+    gamma="scale",
+) -> Pipeline:
+    """Nonlinear pipeline: single-band CSP followed by RBF-SVM."""
+    return Pipeline([
+        ("csp", CSP(n_components=n_components, reg=None, log=True)),
+        ("svm", SVC(
+            kernel="rbf",
+            C=C,
+            gamma=gamma,
+            probability=True,
+            random_state=42,
+        )),
+    ])
+
+
+def make_csp_feature_selected_svm(
+    n_components: int = 6,
+    percentile: int = 80,
+    C: float = 1.0,
+    gamma="scale",
+) -> Pipeline:
+    """Single-band CSP + feature selection + nonlinear RBF-SVM."""
+    return Pipeline([
+        ("csp", CSP(n_components=n_components, reg=None, log=True)),
+        ("select", SelectPercentile(score_func=f_classif, percentile=percentile)),
+        ("svm", SVC(
+            kernel="rbf",
+            C=C,
+            gamma=gamma,
+            probability=True,
+            random_state=42,
+        )),
     ])
 
 
@@ -88,6 +128,46 @@ def make_fbcsp_feature_selected_lda(
         ("fbcsp", FilterBankCSP(n_components=n_components, bands=bands)),
         ("select", SelectPercentile(score_func=f_classif, percentile=percentile)),
         ("lda", LDA()),
+    ])
+
+
+def make_fbcsp_svm(
+    n_components: int = 4,
+    bands=None,
+    C: float = 1.0,
+    gamma="scale",
+) -> Pipeline:
+    """Nonlinear pipeline: Filter-Bank CSP followed by RBF-SVM."""
+    return Pipeline([
+        ("fbcsp", FilterBankCSP(n_components=n_components, bands=bands)),
+        ("svm", SVC(
+            kernel="rbf",
+            C=C,
+            gamma=gamma,
+            probability=True,
+            random_state=42,
+        )),
+    ])
+
+
+def make_fbcsp_feature_selected_svm(
+    n_components: int = 4,
+    bands=None,
+    percentile: int = 80,
+    C: float = 1.0,
+    gamma="scale",
+) -> Pipeline:
+    """Filter-Bank CSP + feature selection + nonlinear RBF-SVM."""
+    return Pipeline([
+        ("fbcsp", FilterBankCSP(n_components=n_components, bands=bands)),
+        ("select", SelectPercentile(score_func=f_classif, percentile=percentile)),
+        ("svm", SVC(
+            kernel="rbf",
+            C=C,
+            gamma=gamma,
+            probability=True,
+            random_state=42,
+        )),
     ])
 
 
