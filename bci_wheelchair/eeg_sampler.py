@@ -18,11 +18,12 @@ VALID_CLASSES = {
 
 class EEGPredictionSampler:
     """
-    Sample a classifier prediction conditioned on an intended EEG class.
+    Sample classifier predictions conditioned on an intended EEG class.
 
-    The CSV contains previously generated out-of-fold classifier predictions.
-    Selecting a row by its true class represents sampling an EEG trial for
-    the user's intended movement and passing it through the classifier.
+    Supported CSV column formats:
+
+    1. true_class, predicted_class
+    2. true_label, predicted_label
     """
 
     def __init__(
@@ -40,57 +41,65 @@ class EEGPredictionSampler:
 
         self.predictions = pd.read_csv(self.csv_path)
 
-        required_columns = {
+        available_columns = set(self.predictions.columns)
+
+        if {
             "true_class",
             "predicted_class",
-        }
+        }.issubset(available_columns):
+            self.true_column = "true_class"
+            self.predicted_column = "predicted_class"
 
-        missing_columns = required_columns - set(self.predictions.columns)
+        elif {
+            "true_label",
+            "predicted_label",
+        }.issubset(available_columns):
+            self.true_column = "true_label"
+            self.predicted_column = "predicted_label"
 
-        if missing_columns:
+        else:
             raise ValueError(
-                "Prediction CSV is missing required columns: "
-                f"{sorted(missing_columns)}"
+                "Prediction CSV must contain either "
+                "['true_class', 'predicted_class'] or "
+                "['true_label', 'predicted_label']."
             )
 
         unknown_true_classes = (
-            set(self.predictions["true_class"].unique()) - VALID_CLASSES
+            set(self.predictions[self.true_column].dropna().unique())
+            - VALID_CLASSES
         )
 
         unknown_predicted_classes = (
-            set(self.predictions["predicted_class"].unique()) - VALID_CLASSES
+            set(
+                self.predictions[
+                    self.predicted_column
+                ].dropna().unique()
+            )
+            - VALID_CLASSES
         )
 
         if unknown_true_classes:
             raise ValueError(
-                f"Unknown true classes: {sorted(unknown_true_classes)}"
+                f"Unknown true classes: "
+                f"{sorted(unknown_true_classes)}"
             )
 
         if unknown_predicted_classes:
             raise ValueError(
-                "Unknown predicted classes: "
+                f"Unknown predicted classes: "
                 f"{sorted(unknown_predicted_classes)}"
             )
 
     def sample_prediction(self, intended_class: str) -> str:
-        """
-        Sample one predicted class for the requested intended class.
+        """Sample one prediction for the intended movement class."""
 
-        Args:
-            intended_class:
-                The movement class the simulated user intends to perform.
-
-        Returns:
-            The class predicted by the EEG classifier for a randomly
-            selected trial belonging to the intended class.
-        """
         if intended_class not in VALID_CLASSES:
             raise ValueError(
                 f"Unknown intended class: {intended_class}"
             )
 
         matching_trials = self.predictions[
-            self.predictions["true_class"] == intended_class
+            self.predictions[self.true_column] == intended_class
         ]
 
         if matching_trials.empty:
@@ -98,11 +107,15 @@ class EEGPredictionSampler:
                 f"No EEG trials found for class: {intended_class}"
             )
 
-        selected_index = self.rng.integers(
-            low=0,
-            high=len(matching_trials),
+        selected_index = int(
+            self.rng.integers(
+                low=0,
+                high=len(matching_trials),
+            )
         )
 
         selected_trial = matching_trials.iloc[selected_index]
 
-        return str(selected_trial["predicted_class"])
+        return str(
+            selected_trial[self.predicted_column]
+        )
