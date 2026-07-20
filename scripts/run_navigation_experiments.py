@@ -17,11 +17,18 @@ N_SIMULATIONS = 1000
 GRID_ROWS = 20
 GRID_COLS = 20
 MAX_STEPS = 500
+
 SCENARIO_SEED = 42
 CLASSIFIER_SEED = 42
 RANDOM_BASELINE_SEED = 42
 
-OUTPUT_PATH = Path("results/navigation_simulation_results.csv")
+PREDICTION_PATH = Path(
+    "results/evaluation_predictions.csv"
+)
+
+OUTPUT_PATH = Path(
+    "results/navigation_simulation_results.csv"
+)
 
 
 def run_experiment(
@@ -30,9 +37,9 @@ def run_experiment(
     scenarios,
     environment: GridEnvironment,
 ) -> list[dict]:
-    """Run all scenarios for one controller."""
+    """Run all navigation scenarios for one controller."""
 
-    records = []
+    records: list[dict] = []
 
     for simulation_id, (start_state, target) in enumerate(
         scenarios,
@@ -62,8 +69,12 @@ def run_experiment(
                 "final_col": result.final_state.position[1],
                 "final_heading": result.final_state.heading,
                 "final_distance": result.final_distance,
-                "correct_predictions": result.correct_predictions,
-                "incorrect_predictions": result.incorrect_predictions,
+                "correct_predictions": (
+                    result.correct_predictions
+                ),
+                "incorrect_predictions": (
+                    result.incorrect_predictions
+                ),
                 "stop_commands": result.stop_commands,
                 "blocked_moves": result.blocked_moves,
             }
@@ -71,8 +82,8 @@ def run_experiment(
 
         if simulation_id % 100 == 0:
             print(
-                f"{controller_name}: "
-                f"completed {simulation_id}/{len(scenarios)}"
+                f"{controller_name}: completed "
+                f"{simulation_id}/{len(scenarios)}"
             )
 
     return records
@@ -85,27 +96,47 @@ def print_summary(results: pd.DataFrame) -> None:
     print("Navigation Experiment Summary")
     print("========================================")
 
-    for controller, group in results.groupby("controller"):
-        successful = group[group["reached_target"]]
+    for controller, group in results.groupby(
+        "controller"
+    ):
+        successful = group[
+            group["reached_target"]
+        ]
 
-        success_rate = group["reached_target"].mean() * 100
+        success_rate = (
+            group["reached_target"].mean() * 100
+        )
 
         mean_steps_all = group["steps"].mean()
 
-        mean_steps_successful = (
-            successful["steps"].mean()
-            if not successful.empty
-            else float("nan")
+        if successful.empty:
+            mean_steps_successful = float("nan")
+        else:
+            mean_steps_successful = (
+                successful["steps"].mean()
+            )
+
+        mean_final_distance = (
+            group["final_distance"].mean()
         )
 
-        mean_final_distance = group["final_distance"].mean()
-        mean_blocked_moves = group["blocked_moves"].mean()
-        mean_stop_commands = group["stop_commands"].mean()
+        mean_blocked_moves = (
+            group["blocked_moves"].mean()
+        )
+
+        mean_stop_commands = (
+            group["stop_commands"].mean()
+        )
 
         print(f"\nController: {controller}")
         print(f"Simulations: {len(group)}")
-        print(f"Success rate: {success_rate:.2f}%")
-        print(f"Mean steps (all): {mean_steps_all:.2f}")
+        print(
+            f"Success rate: {success_rate:.2f}%"
+        )
+        print(
+            f"Mean steps (all): "
+            f"{mean_steps_all:.2f}"
+        )
         print(
             "Mean steps (successful only): "
             f"{mean_steps_successful:.2f}"
@@ -125,6 +156,26 @@ def print_summary(results: pd.DataFrame) -> None:
 
 
 def main() -> None:
+    if not PREDICTION_PATH.exists():
+        raise FileNotFoundError(
+            f"Evaluation prediction file not found: "
+            f"{PREDICTION_PATH}"
+        )
+
+    print(
+        f"Using classifier predictions from: "
+        f"{PREDICTION_PATH}"
+    )
+
+    print(
+        f"Grid: {GRID_ROWS} x {GRID_COLS}"
+    )
+
+    print(
+        f"Simulations per controller: "
+        f"{N_SIMULATIONS}"
+    )
+
     environment = GridEnvironment(
         rows=GRID_ROWS,
         cols=GRID_COLS,
@@ -138,7 +189,7 @@ def main() -> None:
     )
 
     classifier_sampler = EEGPredictionSampler(
-        "results/predicted_commands.csv",
+        PREDICTION_PATH,
         random_seed=CLASSIFIER_SEED,
     )
 
