@@ -1,5 +1,5 @@
 %% BCI-Controlled Wheelchair Simulation (Animated)
-% Reads classifier predictions from results/predicted_commands.csv
+% Reads classifier predictions from results/test_predicted_commands.csv
 % (produced by scripts/export_predictions.py) and animates an
 % intelligent wheelchair moving step-by-step on a 2D grid, with safety
 % logic:
@@ -29,7 +29,7 @@ obstacles(5, 8:14) = true;     % a wall the chair must not cross
 
 %% --- Load predicted commands from Python classifier output ---
 script_dir = fileparts(mfilename('fullpath'));
-csv_path = fullfile(script_dir, 'results', 'predicted_commands.csv');
+csv_path = fullfile(script_dir, 'results', 'test_predicted_commands.csv');
 
 if ~isfile(csv_path)
     error('Cannot find %s. Run scripts/export_predictions.py first.', csv_path);
