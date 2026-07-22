@@ -16,7 +16,7 @@ Important:
     Euclidean Alignment uses only the unlabeled EEG trials of each subject.
 
 Run:
-    python -m scripts.export_cross_subject_ea_regularized
+    python -m scripts.run_cross_subject_evaluation
 """
 
 from __future__ import annotations
