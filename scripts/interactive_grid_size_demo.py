@@ -1,16 +1,5 @@
 """
-Interactive EEG wheelchair navigation demonstration.
-
-Select a grid size using buttons:
-
-    10x10
-    20x20
-    30x30
-    40x40
-
-The demonstration uses predictions sampled from:
-
-    results/evaluation_predictions.csv
+Interactive EEG-controlled wheelchair grid-size demonstration.
 
 Run from the project root:
 
@@ -19,20 +8,28 @@ Run from the project root:
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import matplotlib
+
+# Select an interactive backend before importing pyplot.
+if sys.platform == "darwin":
+    try:
+        matplotlib.use("MacOSX")
+    except ImportError:
+        matplotlib.use("TkAgg")
+
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
 from matplotlib.widgets import Button
 
 from bci_wheelchair.eeg_sampler import EEGPredictionSampler
 
 
-PREDICTIONS_PATH = Path("results/evaluation_predictions.csv")
+PREDICTIONS_PATH = Path("results/cross_subject_a09_predictions.csv")
 
-GRID_SIZES = [10, 20, 30, 40]
-
+GRID_SIZES = (10, 20, 30, 40)
 MAX_STEPS = 500
 FRAME_INTERVAL_MS = 120
 
@@ -51,21 +48,21 @@ COMMAND_LABELS = {
 }
 
 
-@dataclass
+@dataclass(frozen=True)
 class DemoStep:
-    """Store one navigation step."""
+    """Represent one navigation step."""
 
     row: int
-    col: int
+    column: int
     heading: int
     intended_command: str
     predicted_command: str
     reached_target: bool
 
 
-@dataclass
+@dataclass(frozen=True)
 class GridDemo:
-    """Store one complete trajectory."""
+    """Represent one complete grid trajectory."""
 
     grid_size: int
     start: tuple[int, int]
@@ -74,21 +71,19 @@ class GridDemo:
 
 
 def turn_left(heading: int) -> int:
-    """Rotate 90 degrees left."""
+    """Turn 90 degrees left."""
 
     return (heading - 90) % 360
 
 
 def turn_right(heading: int) -> int:
-    """Rotate 90 degrees right."""
+    """Turn 90 degrees right."""
 
     return (heading + 90) % 360
 
 
-def heading_delta(
-    heading: int,
-) -> tuple[int, int]:
-    """Return movement for the current heading."""
+def get_heading_delta(heading: int) -> tuple[int, int]:
+    """Return row and column changes for a heading."""
 
     movements = {
         0: (-1, 0),
@@ -97,25 +92,28 @@ def heading_delta(
         270: (0, -1),
     }
 
+    if heading not in movements:
+        raise ValueError(f"Unsupported heading: {heading}")
+
     return movements[heading]
 
 
-def desired_heading(
+def get_desired_heading(
     position: tuple[int, int],
     target: tuple[int, int],
 ) -> int | None:
-    """Return the heading required to move towards the target."""
+    """Determine the direction required to approach the target."""
 
-    current_row, current_col = position
-    target_row, target_col = target
+    current_row, current_column = position
+    target_row, target_column = target
 
     if position == target:
         return None
 
-    if target_col > current_col:
+    if target_column > current_column:
         return 90
 
-    if target_col < current_col:
+    if target_column < current_column:
         return 270
 
     if target_row > current_row:
@@ -124,25 +122,25 @@ def desired_heading(
     return 0
 
 
-def intended_command(
+def choose_intended_command(
     position: tuple[int, int],
     heading: int,
     target: tuple[int, int],
 ) -> str:
     """Choose the ideal motor-imagery command."""
 
-    required_heading = desired_heading(
+    desired_heading = get_desired_heading(
         position=position,
         target=target,
     )
 
-    if required_heading is None:
+    if desired_heading is None:
         return "tongue"
 
-    if heading == required_heading:
+    if heading == desired_heading:
         return "feet"
 
-    difference = (required_heading - heading) % 360
+    difference = (desired_heading - heading) % 360
 
     if difference == 90:
         return "right_hand"
@@ -153,39 +151,37 @@ def intended_command(
     return "right_hand"
 
 
-def apply_prediction(
+def apply_command(
     position: tuple[int, int],
     heading: int,
-    predicted_command: str,
+    command: str,
     grid_size: int,
 ) -> tuple[tuple[int, int], int]:
-    """Apply a classifier command to the wheelchair."""
+    """Apply a predicted command to the wheelchair."""
 
-    if predicted_command == "left_hand":
+    if command == "left_hand":
         return position, turn_left(heading)
 
-    if predicted_command == "right_hand":
+    if command == "right_hand":
         return position, turn_right(heading)
 
-    if predicted_command == "tongue":
+    if command == "tongue":
         return position, heading
 
-    if predicted_command != "feet":
-        raise ValueError(
-            f"Unknown predicted command: {predicted_command}"
-        )
+    if command != "feet":
+        raise ValueError(f"Unknown command: {command}")
 
-    row, col = position
-    row_delta, col_delta = heading_delta(heading)
+    row, column = position
+    row_change, column_change = get_heading_delta(heading)
 
-    new_row = row + row_delta
-    new_col = col + col_delta
+    new_row = row + row_change
+    new_column = column + column_change
 
     if (
         0 <= new_row < grid_size
-        and 0 <= new_col < grid_size
+        and 0 <= new_column < grid_size
     ):
-        return (new_row, new_col), heading
+        return (new_row, new_column), heading
 
     return position, heading
 
@@ -194,7 +190,7 @@ def build_demo(
     grid_size: int,
     random_seed: int,
 ) -> GridDemo:
-    """Generate one trajectory using evaluation-data predictions."""
+    """Generate a trajectory using evaluation predictions."""
 
     sampler = EEGPredictionSampler(
         PREDICTIONS_PATH,
@@ -210,7 +206,7 @@ def build_demo(
     steps = [
         DemoStep(
             row=position[0],
-            col=position[1],
+            column=position[1],
             heading=heading,
             intended_command="tongue",
             predicted_command="tongue",
@@ -222,29 +218,29 @@ def build_demo(
         if position == target:
             break
 
-        correct_command = intended_command(
+        intended_command = choose_intended_command(
             position=position,
             heading=heading,
             target=target,
         )
 
         predicted_command = sampler.sample_prediction(
-            correct_command
+            intended_command
         )
 
-        position, heading = apply_prediction(
+        position, heading = apply_command(
             position=position,
             heading=heading,
-            predicted_command=predicted_command,
+            command=predicted_command,
             grid_size=grid_size,
         )
 
         steps.append(
             DemoStep(
                 row=position[0],
-                col=position[1],
+                column=position[1],
                 heading=heading,
-                intended_command=correct_command,
+                intended_command=intended_command,
                 predicted_command=predicted_command,
                 reached_target=(position == target),
             )
@@ -259,160 +255,151 @@ def build_demo(
 
 
 class InteractiveGridDemo:
-    """Interactive grid-size navigation UI."""
+    """Manage the interactive animation interface."""
 
     def __init__(self) -> None:
         if not PREDICTIONS_PATH.exists():
             raise FileNotFoundError(
-                f"Prediction file not found: {PREDICTIONS_PATH}"
+                f"Prediction file not found: "
+                f"{PREDICTIONS_PATH.resolve()}"
             )
 
-        self.figure, self.axis = plt.subplots(
-            figsize=(10, 8)
-        )
+        self.figure, self.axis = plt.subplots(figsize=(11, 8))
 
         self.figure.subplots_adjust(
             left=0.08,
-            right=0.78,
-            bottom=0.12,
+            right=0.77,
+            bottom=0.13,
             top=0.90,
         )
 
+        try:
+            self.figure.canvas.manager.set_window_title(
+                "EEG Wheelchair Navigation"
+            )
+        except AttributeError:
+            pass
+
         self.current_demo: GridDemo | None = None
         self.current_frame = 0
-        self.animation: FuncAnimation | None = None
+        self.timer = None
         self.is_paused = False
+
+        self.grid_buttons: list[Button] = []
 
         self.create_buttons()
         self.show_welcome_screen()
 
+    def create_button(
+        self,
+        label: str,
+        bottom: float,
+        callback,
+    ) -> Button:
+        """Create one interface button."""
+
+        button_axis = self.figure.add_axes(
+            [0.81, bottom, 0.15, 0.06]
+        )
+
+        button = Button(button_axis, label)
+        button.on_clicked(callback)
+
+        return button
+
     def create_buttons(self) -> None:
-        """Create grid selection and animation buttons."""
+        """Create grid selection and playback controls."""
 
-        button_width = 0.14
-        button_height = 0.055
-        button_left = 0.82
-
-        button_positions = [
-            ("10×10", 0.78, 10),
-            ("20×20", 0.70, 20),
-            ("30×30", 0.62, 30),
-            ("40×40", 0.54, 40),
+        button_data = [
+            ("10 × 10", 0.79, 10),
+            ("20 × 20", 0.71, 20),
+            ("30 × 30", 0.63, 30),
+            ("40 × 40", 0.55, 40),
         ]
 
-        self.grid_buttons = []
-
-        for label, bottom, grid_size in button_positions:
-            button_axis = self.figure.add_axes(
-                [
-                    button_left,
-                    bottom,
-                    button_width,
-                    button_height,
-                ]
-            )
-
-            button = Button(
-                button_axis,
-                label,
-            )
-
-            button.on_clicked(
-                lambda event, size=grid_size:
-                self.start_demo(size)
+        for label, bottom, grid_size in button_data:
+            button = self.create_button(
+                label=label,
+                bottom=bottom,
+                callback=(
+                    lambda event, size=grid_size:
+                    self.start_demo(size)
+                ),
             )
 
             self.grid_buttons.append(button)
 
-        replay_axis = self.figure.add_axes(
-            [
-                button_left,
-                0.38,
-                button_width,
-                button_height,
-            ]
+        self.replay_button = self.create_button(
+            label="Replay",
+            bottom=0.39,
+            callback=self.replay_demo,
         )
 
-        self.replay_button = Button(
-            replay_axis,
-            "Replay",
+        self.pause_button = self.create_button(
+            label="Pause",
+            bottom=0.31,
+            callback=self.toggle_pause,
         )
 
-        self.replay_button.on_clicked(
-            self.replay_demo
-        )
-
-        pause_axis = self.figure.add_axes(
-            [
-                button_left,
-                0.30,
-                button_width,
-                button_height,
-            ]
-        )
-
-        self.pause_button = Button(
-            pause_axis,
-            "Pause",
-        )
-
-        self.pause_button.on_clicked(
-            self.toggle_pause
+        self.stop_button = self.create_button(
+            label="Stop",
+            bottom=0.23,
+            callback=self.stop_demo,
         )
 
     def show_welcome_screen(self) -> None:
-        """Show instructions before a grid is selected."""
+        """Display the initial instructions."""
 
         self.axis.clear()
         self.axis.axis("off")
 
         self.axis.text(
             0.5,
-            0.62,
+            0.65,
             "EEG-Controlled Wheelchair",
             ha="center",
             va="center",
-            fontsize=22,
+            fontsize=23,
             fontweight="bold",
             transform=self.axis.transAxes,
         )
 
         self.axis.text(
             0.5,
-            0.48,
+            0.50,
             "Select a grid size using the buttons",
             ha="center",
             va="center",
-            fontsize=15,
+            fontsize=16,
             transform=self.axis.transAxes,
         )
 
         self.axis.text(
             0.5,
-            0.38,
-            "The wheelchair will navigate using\n"
-            "predictions sampled from the unseen evaluation data.",
+            0.36,
+            "The wheelchair uses classifier predictions\n"
+            "sampled from the unseen evaluation dataset.",
             ha="center",
             va="center",
-            fontsize=12,
+            fontsize=13,
             transform=self.axis.transAxes,
         )
 
         self.figure.canvas.draw_idle()
 
-    def start_demo(
-        self,
-        grid_size: int,
-    ) -> None:
-        """Generate and start a selected grid demonstration."""
+    def stop_timer(self) -> None:
+        """Safely stop the current animation timer."""
 
-        if self.animation is not None:
-            event_source = self.animation.event_source
+        if self.timer is not None:
+            self.timer.stop()
+            self.timer = None
 
-            if event_source is not None:
-                event_source.stop()
+    def start_demo(self, grid_size: int) -> None:
+        """Start the selected grid-size demonstration."""
 
-            self.animation = None
+        self.stop_timer()
+
+        print(f"\nGenerating {grid_size}x{grid_size} trajectory...")
 
         self.current_demo = build_demo(
             grid_size=grid_size,
@@ -424,134 +411,143 @@ class InteractiveGridDemo:
         self.pause_button.label.set_text("Pause")
 
         total_steps = len(self.current_demo.steps) - 1
-        reached = self.current_demo.steps[-1].reached_target
-
-        print(
-            f"\nSelected {grid_size}x{grid_size}"
-        )
-        print(
-            f"Steps: {total_steps}"
-        )
-        print(
-            f"Target reached: {reached}"
+        target_reached = (
+            self.current_demo.steps[-1].reached_target
         )
 
-        self.animation = FuncAnimation(
-            self.figure,
-            self.update_frame,
-            frames=len(self.current_demo.steps),
-            interval=FRAME_INTERVAL_MS,
-            repeat=False,
-            blit=False,
+        print(f"Grid size: {grid_size}x{grid_size}")
+        print(f"Steps: {total_steps}")
+        print(f"Target reached: {target_reached}")
+
+        self.draw_frame(0)
+
+        self.timer = self.figure.canvas.new_timer(
+            interval=FRAME_INTERVAL_MS
         )
 
-        self.figure.canvas.draw_idle()
+        self.timer.add_callback(self.advance_frame)
+        self.timer.start()
 
-    def replay_demo(
-        self,
-        event,
-    ) -> None:
-        """Replay the currently selected grid."""
+    def advance_frame(self):
+        """Advance the animation by one step."""
 
         if self.current_demo is None:
+            return False
+
+        next_frame = self.current_frame + 1
+
+        if next_frame >= len(self.current_demo.steps):
+            self.stop_timer()
+            print("Animation completed.")
+            return False
+
+        self.current_frame = next_frame
+        self.draw_frame(self.current_frame)
+
+        return True
+
+    def replay_demo(self, event=None) -> None:
+        """Replay the selected demonstration."""
+
+        if self.current_demo is None:
+            print("Select a grid size first.")
             return
 
-        self.start_demo(
-            self.current_demo.grid_size
-        )
+        self.start_demo(self.current_demo.grid_size)
 
-    def toggle_pause(
-        self,
-        event,
-    ) -> None:
+    def toggle_pause(self, event=None) -> None:
         """Pause or resume the animation."""
 
-        if self.animation is None:
+        if self.current_demo is None:
+            print("Select a grid size first.")
             return
 
-        event_source = self.animation.event_source
+        if self.timer is None:
+            if self.current_frame >= len(self.current_demo.steps) - 1:
+                print("Animation finished. Press Replay.")
+                return
 
-        if event_source is None:
-            return
+            self.timer = self.figure.canvas.new_timer(
+                interval=FRAME_INTERVAL_MS
+            )
+            self.timer.add_callback(self.advance_frame)
 
         if self.is_paused:
-            event_source.start()
-            self.pause_button.label.set_text(
-                "Pause"
-            )
+            self.timer.start()
             self.is_paused = False
+            self.pause_button.label.set_text("Pause")
+            print("Animation resumed.")
         else:
-            event_source.stop()
-            self.pause_button.label.set_text(
-                "Resume"
-            )
+            self.timer.stop()
             self.is_paused = True
+            self.pause_button.label.set_text("Resume")
+            print("Animation paused.")
 
         self.figure.canvas.draw_idle()
 
-    def update_frame(
-        self,
-        frame_index: int,
-    ):
+    def stop_demo(self, event=None) -> None:
+        """Stop the current animation."""
+
+        self.stop_timer()
+        self.is_paused = False
+        self.pause_button.label.set_text("Pause")
+
+        print("Animation stopped.")
+
+    def draw_frame(self, frame_index: int) -> None:
         """Draw one animation frame."""
 
         if self.current_demo is None:
-            return []
-
-        self.current_frame = frame_index
+            return
 
         demo = self.current_demo
         step = demo.steps[frame_index]
-        size = demo.grid_size
+        grid_size = demo.grid_size
 
         self.axis.clear()
 
-        self.axis.set_xlim(-0.5, size - 0.5)
-        self.axis.set_ylim(size - 0.5, -0.5)
+        self.axis.set_xlim(-0.5, grid_size - 0.5)
+        self.axis.set_ylim(grid_size - 0.5, -0.5)
 
-        self.axis.set_xticks(
-            range(size)
+        tick_interval = 1 if grid_size <= 20 else 5
+        major_ticks = range(0, grid_size, tick_interval)
+
+        self.axis.set_xticks(major_ticks)
+        self.axis.set_yticks(major_ticks)
+
+        self.axis.set_xticks(range(grid_size), minor=True)
+        self.axis.set_yticks(range(grid_size), minor=True)
+
+        self.axis.grid(
+            which="minor",
+            linewidth=0.4,
+            alpha=0.4,
         )
-        self.axis.set_yticks(
-            range(size)
+
+        self.axis.grid(
+            which="major",
+            linewidth=0.8,
+            alpha=0.8,
         )
 
-        if size >= 30:
-            self.axis.set_xticklabels(
-                [
-                    str(value)
-                    if value % 5 == 0
-                    else ""
-                    for value in range(size)
-                ]
-            )
-
-            self.axis.set_yticklabels(
-                [
-                    str(value)
-                    if value % 5 == 0
-                    else ""
-                    for value in range(size)
-                ]
-            )
-
-        self.axis.grid(True)
+        visible_steps = demo.steps[: frame_index + 1]
 
         path_rows = [
-            item.row
-            for item in demo.steps[: frame_index + 1]
+            trajectory_step.row
+            for trajectory_step in visible_steps
         ]
 
-        path_cols = [
-            item.col
-            for item in demo.steps[: frame_index + 1]
+        path_columns = [
+            trajectory_step.column
+            for trajectory_step in visible_steps
         ]
 
         self.axis.plot(
-            path_cols,
+            path_columns,
             path_rows,
-            linewidth=2,
+            linewidth=2.2,
             label="Wheelchair path",
+            zorder=2,
         )
 
         self.axis.scatter(
@@ -567,16 +563,16 @@ class InteractiveGridDemo:
             demo.target[1],
             demo.target[0],
             marker="*",
-            s=250,
+            s=270,
             label="Target",
             zorder=4,
         )
 
         self.axis.scatter(
-            step.col,
+            step.column,
             step.row,
             marker="o",
-            s=200,
+            s=210,
             label="Wheelchair",
             zorder=5,
         )
@@ -587,36 +583,37 @@ class InteractiveGridDemo:
             else "Navigating"
         )
 
-        intended_text = COMMAND_LABELS.get(
+        intended_label = COMMAND_LABELS.get(
             step.intended_command,
             step.intended_command,
         )
 
-        predicted_text = COMMAND_LABELS.get(
+        predicted_label = COMMAND_LABELS.get(
             step.predicted_command,
             step.predicted_command,
         )
 
         self.axis.set_title(
             f"EEG Wheelchair Navigation — "
-            f"{size}×{size} Grid\n"
+            f"{grid_size} × {grid_size} Grid\n"
             f"Step {frame_index}/"
             f"{len(demo.steps) - 1} | "
             f"Heading: {HEADINGS[step.heading]} | "
-            f"{status}"
+            f"{status}",
+            fontsize=14,
         )
 
         self.axis.set_xlabel(
-            f"Intended: {intended_text}    "
-            f"Predicted: {predicted_text}"
+            f"Intended: {intended_label}     "
+            f"Predicted: {predicted_label}",
+            fontsize=11,
         )
 
-        self.axis.set_ylabel(
-            "Grid row"
-        )
+        self.axis.set_ylabel("Grid row")
 
         self.axis.legend(
             loc="upper left",
+            fontsize=9,
         )
 
         self.axis.set_aspect(
@@ -626,16 +623,19 @@ class InteractiveGridDemo:
 
         self.figure.canvas.draw_idle()
 
-        return []
-
     def run(self) -> None:
         """Open the interactive interface."""
 
-        plt.show()
+        print(f"Matplotlib backend: {matplotlib.get_backend()}")
+        print("Opening interactive demonstration...")
+
+        plt.show(block=True)
 
 
 def main() -> None:
-    """Run the interactive UI."""
+    """Run the application."""
+
+    print("Starting interactive grid-size demo...")
 
     application = InteractiveGridDemo()
     application.run()

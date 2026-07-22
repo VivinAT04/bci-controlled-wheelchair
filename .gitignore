@@ -26,3 +26,5 @@ results/*
 
 # Env vars
 .env
+venv 2/
+*.pyc

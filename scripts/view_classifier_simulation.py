@@ -17,7 +17,7 @@ def main():
     )
 
     sampler = EEGPredictionSampler(
-        "results/predicted_commands.csv",
+        "results/test_predicted_commands.csv",
         random_seed=42,
     )
 
