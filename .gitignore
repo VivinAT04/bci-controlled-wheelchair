@@ -3,11 +3,12 @@ venv/
 .venv/
 env/
 
-# Byte-compiled files
+# Python cache
 __pycache__/
 *.py[cod]
+*.pyc
 
-# EEG data — large files, don't commit
+# EEG data (large files)
 data/raw/*
 data/processed/*
 !data/raw/.gitkeep
@@ -16,15 +17,18 @@ data/processed/*
 *.mat
 mne_data/
 
-# Results / model artifacts
+# Generated results
 results/*
 !results/.gitkeep
 
-# Editor / OS
+# macOS
 .DS_Store
-.vscode/*
 
-# Env vars
+# VS Code
+.vscode/
+
+# JetBrains IDEs
+.idea/
+
+# Environment variables
 .env
-venv 2/
-*.pyc

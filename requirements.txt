@@ -27,3 +27,7 @@ six==1.17.0
 threadpoolctl==3.6.0
 tqdm==4.68.3
 urllib3==2.7.0
+pandas
+pyriemann==0.12
+shap
+torch

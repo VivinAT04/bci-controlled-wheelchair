@@ -16,7 +16,7 @@ Important:
     Euclidean Alignment uses only the unlabeled EEG trials of each subject.
 
 Run:
-    python -m scripts.cross_subject.export_cross_subject_ea_regularized
+    python -m scripts.cross_subject.run_cross_subject_evaluation
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ import mne
 import numpy as np
 from mne.decoding import CSP
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.decomposition import PCA
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.metrics import (
     accuracy_score,
@@ -40,7 +41,7 @@ from sklearn.pipeline import Pipeline
 
 from bci_wheelchair.commands import CLASS_TO_COMMAND
 from bci_wheelchair.data.loading import load_raw_gdf
-from bci_wheelchair.models import DEFAULT_BANDS
+from bci_wheelchair.features.fbcsp import RegularizedFilterBankCSP
 from bci_wheelchair.data.preprocessing import (
     SFREQ,
     bandpass,
@@ -71,11 +72,11 @@ TEST_SUBJECT = "A09T"
 DATA_DIRECTORY = Path("data/raw")
 
 OUTPUT_PATH = Path(
-    "results/cross_subject/csp_fbcsp/cross_subject_a09_ea_corrected_bands_csp8_predictions.csv"
+    "results/cross_subject/csp_fbcsp/cross_subject_a09_ea_csp10_pca90_predictions.csv"
 )
 
 SUMMARY_PATH = Path(
-    "results/cross_subject/csp_fbcsp/cross_subject_a09_ea_corrected_bands_csp8_summary.csv"
+    "results/cross_subject/csp_fbcsp/cross_subject_a09_ea_csp10_pca90_summary.csv"
 )
 
 FMIN = 8.0
@@ -83,7 +84,7 @@ FMAX = 30.0
 TMIN = 0.5
 TMAX = 2.5
 
-N_COMPONENTS = 8
+N_COMPONENTS = 10
 
 # Keep the same bands as the regularized 54.5% experiment.
 # This allows Euclidean Alignment to be assessed fairly.
@@ -299,106 +300,9 @@ def alignment_identity_error(
 # Regularized FBCSP
 # ---------------------------------------------------------------------
 
-class RegularizedFilterBankCSP(
-    BaseEstimator,
-    TransformerMixin,
-):
-    """
-    Filter-bank CSP using Ledoit-Wolf covariance regularization.
-    """
-
-    def __init__(
-        self,
-        bands=None,
-        sfreq: float = SFREQ,
-        n_components: int = 4,
-    ):
-        self.bands = (
-            bands
-            if bands is not None
-            else DEFAULT_BANDS
-        )
-        self.sfreq = sfreq
-        self.n_components = n_components
-
-    def fit(
-        self,
-        X: np.ndarray,
-        y: np.ndarray,
-    ):
-        self.csps_ = []
-
-        for low_frequency, high_frequency in self.bands:
-            print(
-                "  Fitting CSP band: "
-                f"{low_frequency}-{high_frequency} Hz"
-            )
-
-            X_band = bandpass(
-                X,
-                low_frequency,
-                high_frequency,
-                self.sfreq,
-            )
-
-            csp = CSP(
-                n_components=self.n_components,
-                reg="ledoit_wolf",
-                log=True,
-            )
-
-            csp.fit(
-                X_band,
-                y,
-            )
-
-            self.csps_.append(csp)
-
-        return self
-
-    def transform(
-        self,
-        X: np.ndarray,
-    ) -> np.ndarray:
-        if not hasattr(self, "csps_"):
-            raise RuntimeError(
-                "RegularizedFilterBankCSP must be "
-                "fitted before transform()."
-            )
-
-        feature_blocks = []
-
-        for (
-            low_frequency,
-            high_frequency,
-        ), csp in zip(
-            self.bands,
-            self.csps_,
-        ):
-            X_band = bandpass(
-                X,
-                low_frequency,
-                high_frequency,
-                self.sfreq,
-            )
-
-            band_features = csp.transform(
-                X_band
-            )
-
-            feature_blocks.append(
-                band_features
-            )
-
-        return np.concatenate(
-            feature_blocks,
-            axis=1,
-        )
-
-
 def make_ea_regularized_classifier() -> Pipeline:
     """
-    Build regularized FBCSP followed by shrinkage LDA.
+    Build regularized FBCSP followed by PCA (90% retained variance) and shrinkage LDA.
 
     Euclidean Alignment is applied subject-by-subject before this
     classifier receives the pooled training data.
@@ -410,6 +314,14 @@ def make_ea_regularized_classifier() -> Pipeline:
                 RegularizedFilterBankCSP(
                     bands=BANDS,
                     n_components=N_COMPONENTS,
+                    verbose=True,
+                ),
+            ),
+            (
+                "pca",
+                PCA(
+                    n_components=0.9,
+                    svd_solver="full",
                 ),
             ),
             (
@@ -924,7 +836,7 @@ def main() -> None:
 
     print("\n" + "=" * 76)
     print(
-        "EA Corrected-Band CSP-8 Cross-Subject Results"
+        "EA CSP-10 + PCA 90% Results"
     )
     print("=" * 76)
 
