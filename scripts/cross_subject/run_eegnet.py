@@ -1,5 +1,5 @@
 """
-Improved EEGNet strict cross-subject LOSO experiment.
+EEGNet strict cross-subject LOSO experiment.
 
 For each test subject:
 
@@ -14,7 +14,7 @@ For each test subject:
 The complete nine-fold experiment is repeated with three random seeds.
 
 Run:
-    python -m scripts.cross_subject.run_eegnet_loso_improved
+    python -m scripts.cross_subject.run_eegnet
 """
 
 from __future__ import annotations
@@ -41,8 +41,7 @@ from sklearn.model_selection import train_test_split
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
-from bci_wheelchair.data.loading import load_raw_gdf
-from bci_wheelchair.data.preprocessing import preprocess_raw
+from bci_wheelchair.data.processed_loading import load_processed_subject
 
 
 # ---------------------------------------------------------------------
@@ -65,7 +64,6 @@ SUBJECTS = [
 
 SEEDS = [42, 123, 2026]
 
-DATA_DIRECTORY = Path("data/raw")
 OUTPUT_DIRECTORY = Path("results/cross_subject/eegnet/eegnet_loso_improved")
 CHECKPOINT_DIRECTORY = OUTPUT_DIRECTORY / "checkpoints"
 
@@ -170,32 +168,39 @@ def encode_labels(labels: np.ndarray) -> np.ndarray:
 def load_subject(
     subject: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    path = DATA_DIRECTORY / f"{subject}.gdf"
+    """
+    Load one subject from the cached 4-40 Hz processed dataset.
 
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Dataset file not found: {path}"
-        )
+    Returns
+    -------
+    X:
+        EEG trials with shape
+        (trials, channels, samples).
 
-    print(f"Loading {subject}...")
+    y:
+        Integer class labels with shape
+        (trials,).
+    """
+    print(f"Loading processed data for {subject}...")
 
-    raw = load_raw_gdf(str(path))
-
-    X, labels = preprocess_raw(
-        raw,
-        fmin=FMIN,
-        fmax=FMAX,
-        tmin=TMIN,
-        tmax=TMAX,
+    X, labels = load_processed_subject(
+        subject,
+        config="4-40",
     )
 
-    X = np.asarray(X, dtype=np.float32)
+    X = np.asarray(
+        X,
+        dtype=np.float32,
+    )
+
+    labels = np.asarray(labels)
     y = encode_labels(labels)
 
     if X.ndim != 3:
         raise ValueError(
             f"{subject}: expected EEG shape "
-            f"(trials, channels, samples), received {X.shape}."
+            f"(trials, channels, samples), "
+            f"received {X.shape}."
         )
 
     if X.shape[1] != N_CHANNELS:
@@ -211,7 +216,8 @@ def load_subject(
 
     if not np.isfinite(X).all():
         raise ValueError(
-            f"{subject}: EEG data contain NaN or infinity."
+            f"{subject}: EEG data contain "
+            "NaN or infinite values."
         )
 
     class_counts = np.bincount(
@@ -225,6 +231,7 @@ def load_subject(
     )
 
     return X, y
+
 
 
 def load_all_subjects(

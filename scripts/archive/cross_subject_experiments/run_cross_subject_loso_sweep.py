@@ -41,7 +41,7 @@ from sklearn.metrics import (
 )
 from sklearn.pipeline import Pipeline
 
-from scripts.cross_subject.run_cross_subject_evaluation import (
+from bci_wheelchair.cross_subject import (
     BANDS,
     CLASS_ORDER,
     RegularizedFilterBankCSP,

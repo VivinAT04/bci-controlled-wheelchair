@@ -40,12 +40,11 @@ from sklearn.metrics import (
 from sklearn.pipeline import Pipeline
 
 from bci_wheelchair.commands import CLASS_TO_COMMAND
-from bci_wheelchair.data.loading import load_raw_gdf
+from bci_wheelchair.data.processed_loading import load_processed_subject
 from bci_wheelchair.features.fbcsp import RegularizedFilterBankCSP
 from bci_wheelchair.data.preprocessing import (
     SFREQ,
     bandpass,
-    preprocess_raw,
 )
 
 
@@ -353,31 +352,17 @@ def load_and_align_subject(
     float,
 ]:
     """
-    Load, preprocess and Euclidean-align one subject independently.
+    Load cached 8-30 Hz EEG and Euclidean-align one subject independently.
     """
-    subject_path = (
-        DATA_DIRECTORY
-        / f"{subject_name}.gdf"
+    print(f"\nLoading processed data for {subject_name}...")
+
+    X, y = load_processed_subject(
+        subject_name,
+        config="8-30",
     )
 
-    if not subject_path.exists():
-        raise FileNotFoundError(
-            f"Dataset not found: {subject_path}"
-        )
-
-    print(f"\nLoading {subject_name}...")
-
-    raw = load_raw_gdf(
-        str(subject_path)
-    )
-
-    X, y = preprocess_raw(
-        raw,
-        fmin=FMIN,
-        fmax=FMAX,
-        tmin=TMIN,
-        tmax=TMAX,
-    )
+    X = np.asarray(X)
+    y = np.asarray(y)
 
     print(
         f"  Original trials: {len(X)}"

@@ -8,8 +8,7 @@ from sklearn.metrics import accuracy_score, cohen_kappa_score, confusion_matrix
 from pyriemann.estimation import Covariances
 from pyriemann.classification import MDM
 
-from bci_wheelchair.data.loading import load_raw_gdf
-from bci_wheelchair.data.preprocessing import preprocess_raw
+from bci_wheelchair.data.processed_loading import load_processed_subject
 
 
 mne.set_log_level("ERROR")
@@ -36,8 +35,10 @@ def main():
     for subject in SUBJECTS:
         print(f"\nRunning {subject}...")
 
-        raw = load_raw_gdf(f"data/raw/{subject}.gdf")
-        X, y = preprocess_raw(raw, fmin=8.0, fmax=30.0, tmin=0.5, tmax=2.5)
+        X, y = load_processed_subject(
+            subject=subject,
+            config="8-30",
+        )
 
         clf = make_riemannian_mdm()
         cv = LeaveOneOut()

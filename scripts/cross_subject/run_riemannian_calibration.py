@@ -36,7 +36,7 @@ comparable with the established 53.67% baseline.
 
 Run:
 
-    python -m scripts.cross_subject.run_cross_subject_riemannian_calibration
+    python -m scripts.cross_subject.run_riemannian_calibration
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from scripts.cross_subject.run_cross_subject_evaluation import (
+from bci_wheelchair.cross_subject import (
     CLASS_ORDER,
     load_and_align_subject,
 )

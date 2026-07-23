@@ -66,7 +66,7 @@ from scripts.cross_subject.run_broadband_riemannian_sweep import (
     load_subjects,
 )
 
-from scripts.cross_subject.run_cross_subject_evaluation import (
+from bci_wheelchair.cross_subject import (
     CLASS_ORDER,
 )
 

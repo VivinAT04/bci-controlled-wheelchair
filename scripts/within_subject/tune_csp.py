@@ -6,7 +6,7 @@ Tests:
 - different CSP component numbers
 
 Run:
-    python -m scripts.within_subject.tune_csp_baseline
+    python -m scripts.within_subject.tune_csp
 """
 
 import warnings

@@ -1,33 +1,47 @@
 """
-Strict LOSO tangent-space mean-alignment and PCA sweep.
+Strict LOSO unsupervised tangent-space domain adaptation.
 
 Pipeline
 --------
 8-30 Hz EEG
 -> 0.5-2.5 second epoch
 -> subject-wise Euclidean Alignment
--> SCM covariance
+-> SCM covariance matrices
 -> Riemannian Tangent Space
--> unsupervised source/target mean alignment
+-> unsupervised target adaptation
 -> StandardScaler
--> optional PCA
 -> shrinkage LDA
 
-PCA configurations
+Adaptation methods
 ------------------
-none
-90% explained variance
-95% explained variance
-99% explained variance
+none:
+    Standard tangent-space baseline.
+
+mean_alignment:
+    Source features are centred using the source mean.
+    Target features are centred using the target mean.
+
+coral:
+    Source tangent features are transformed so their covariance
+    resembles the unseen target subject's tangent-feature covariance.
 
 Important
 ---------
-The unseen target subject labels are used only after prediction to
-calculate evaluation metrics.
+The target subject labels are never used during:
+
+- preprocessing
+- alignment
+- tangent-space fitting
+- domain adaptation
+- scaling
+- classifier training
+
+Target EEG features are used without labels for transductive,
+unsupervised domain adaptation.
 
 Run:
 
-    python -m scripts.cross_subject.run_tangent_mean_alignment_pca_sweep
+    python -m scripts.cross_subject.run_unsupervised_tangent_domain_adaptation
 """
 
 from __future__ import annotations
@@ -43,7 +57,6 @@ import pandas as pd
 from pyriemann.estimation import Covariances
 from pyriemann.tangentspace import TangentSpace
 
-from sklearn.decomposition import PCA
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.metrics import (
     accuracy_score,
@@ -58,7 +71,7 @@ from scripts.cross_subject.run_broadband_riemannian_sweep import (
     load_subjects,
 )
 
-from scripts.cross_subject.run_cross_subject_evaluation import (
+from bci_wheelchair.cross_subject import (
     CLASS_ORDER,
 )
 
@@ -69,47 +82,48 @@ from scripts.cross_subject.run_cross_subject_evaluation import (
 
 COVARIANCE_ESTIMATOR = "scm"
 
-PCA_CONFIGURATIONS: list[tuple[str, float | None]] = [
-    ("no_pca", None),
-    ("pca_90", 0.90),
-    ("pca_95", 0.95),
-    ("pca_99", 0.99),
+ADAPTATION_METHODS = [
+    "none",
+    "mean_alignment",
+    "coral",
 ]
 
+CORAL_REGULARISATION = 1e-3
+
 RESULTS_DIRECTORY = Path(
-    "results/cross_subject/riemannian/tangent_mean_alignment_pca_sweep"
+    "results/cross_subject/riemannian/unsupervised_tangent_domain_adaptation"
 )
 
 CONFIGURATION_RESULTS_PATH = (
     RESULTS_DIRECTORY
-    / "pca_configuration_results.csv"
+    / "adaptation_configuration_results.csv"
 )
 
 SUBJECT_RESULTS_PATH = (
     RESULTS_DIRECTORY
-    / "pca_subject_results.csv"
+    / "adaptation_subject_results.csv"
 )
 
 PREDICTIONS_PATH = (
     RESULTS_DIRECTORY
-    / "pca_predictions.csv"
+    / "adaptation_predictions.csv"
 )
 
 BEST_CONFIGURATION_PATH = (
     RESULTS_DIRECTORY
-    / "pca_best_configuration.csv"
+    / "adaptation_best_configuration.csv"
 )
 
 
 # ---------------------------------------------------------------------
-# CSV helper
+# CSV output
 # ---------------------------------------------------------------------
 
 def write_csv(
     path: Path,
     rows: list[dict[str, Any]],
 ) -> None:
-    """Write a list of dictionaries to CSV."""
+    """Write dictionaries to CSV."""
     if not rows:
         return
 
@@ -140,17 +154,133 @@ def write_csv(
 
 
 # ---------------------------------------------------------------------
-# Feature extraction
+# Matrix utilities
+# ---------------------------------------------------------------------
+
+def symmetrise(
+    matrix: np.ndarray,
+) -> np.ndarray:
+    """Return an exactly symmetric matrix."""
+    matrix = np.asarray(
+        matrix,
+        dtype=np.float64,
+    )
+
+    return (
+        matrix
+        + matrix.T
+    ) / 2.0
+
+
+def stable_matrix_power(
+    matrix: np.ndarray,
+    power: float,
+    regularisation: float,
+) -> np.ndarray:
+    """
+    Compute a stable symmetric matrix power.
+
+    power=-0.5 gives the inverse square root.
+    power=0.5 gives the square root.
+    """
+    matrix = symmetrise(matrix)
+
+    dimension = matrix.shape[0]
+
+    trace_scale = float(
+        np.trace(matrix)
+        / max(dimension, 1)
+    )
+
+    if not np.isfinite(trace_scale) or trace_scale <= 0:
+        trace_scale = 1.0
+
+    regularised_matrix = (
+        matrix
+        + regularisation
+        * trace_scale
+        * np.eye(
+            dimension,
+            dtype=np.float64,
+        )
+    )
+
+    eigenvalues, eigenvectors = np.linalg.eigh(
+        symmetrise(regularised_matrix)
+    )
+
+    eigenvalue_floor = max(
+        regularisation * trace_scale,
+        np.finfo(np.float64).eps,
+    )
+
+    eigenvalues = np.maximum(
+        eigenvalues,
+        eigenvalue_floor,
+    )
+
+    powered = (
+        eigenvectors
+        @ np.diag(
+            np.power(
+                eigenvalues,
+                power,
+            )
+        )
+        @ eigenvectors.T
+    )
+
+    return symmetrise(powered)
+
+
+def feature_covariance(
+    features: np.ndarray,
+) -> np.ndarray:
+    """Calculate empirical covariance between feature dimensions."""
+    features = np.asarray(
+        features,
+        dtype=np.float64,
+    )
+
+    centered = (
+        features
+        - features.mean(
+            axis=0,
+            keepdims=True,
+        )
+    )
+
+    denominator = max(
+        len(features) - 1,
+        1,
+    )
+
+    covariance = (
+        centered.T
+        @ centered
+    ) / denominator
+
+    return symmetrise(covariance)
+
+
+# ---------------------------------------------------------------------
+# Covariance and tangent features
 # ---------------------------------------------------------------------
 
 def extract_tangent_features(
     X_train: np.ndarray,
     X_test: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, float]:
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    float,
+]:
     """
     Extract SCM covariance matrices and tangent-space features.
 
-    The tangent-space reference is fitted using training subjects only.
+    Covariance and TangentSpace are fitted using source training
+    subjects. Target features are transformed using the source-derived
+    tangent reference.
     """
     start = time.perf_counter()
 
@@ -186,7 +316,7 @@ def extract_tangent_features(
         )
     )
 
-    elapsed_seconds = (
+    elapsed = (
         time.perf_counter()
         - start
     )
@@ -200,23 +330,33 @@ def extract_tangent_features(
             testing_features,
             dtype=np.float64,
         ),
-        float(elapsed_seconds),
+        float(elapsed),
     )
 
 
 # ---------------------------------------------------------------------
-# Mean alignment
+# Unsupervised adaptation
 # ---------------------------------------------------------------------
+
+def apply_no_adaptation(
+    training_features: np.ndarray,
+    testing_features: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return unchanged source and target tangent features."""
+    return (
+        training_features.copy(),
+        testing_features.copy(),
+    )
+
 
 def apply_mean_alignment(
     training_features: np.ndarray,
     testing_features: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Centre source and target tangent features independently.
+    Centre source and target domains independently.
 
-    This uses the unseen target subject's feature mean but does not use
-    target labels.
+    Target labels are not required.
     """
     source_mean = training_features.mean(
         axis=0,
@@ -228,92 +368,130 @@ def apply_mean_alignment(
         keepdims=True,
     )
 
-    aligned_training_features = (
+    adapted_training = (
         training_features
         - source_mean
     )
 
-    aligned_testing_features = (
+    adapted_testing = (
         testing_features
         - target_mean
     )
 
     return (
-        np.asarray(
-            aligned_training_features,
-            dtype=np.float64,
-        ),
-        np.asarray(
-            aligned_testing_features,
-            dtype=np.float64,
-        ),
+        adapted_training,
+        adapted_testing,
     )
 
 
-# ---------------------------------------------------------------------
-# PCA
-# ---------------------------------------------------------------------
-
-def apply_optional_pca(
+def apply_coral(
     training_features: np.ndarray,
     testing_features: np.ndarray,
-    variance_threshold: float | None,
-) -> tuple[
-    np.ndarray,
-    np.ndarray,
-    int,
-    float,
-]:
+    regularisation: float,
+) -> tuple[np.ndarray, np.ndarray]:
     """
-    Fit PCA using training features only.
+    Apply unsupervised CORAL adaptation.
 
-    A value such as 0.95 retains enough principal components to explain
-    at least 95% of training-feature variance.
+    The source domain is whitened using its covariance and recoloured
+    using the unseen target subject covariance.
+
+    The target subject labels are never used.
     """
-    if variance_threshold is None:
-        return (
-            training_features.copy(),
-            testing_features.copy(),
-            int(training_features.shape[1]),
-            1.0,
-        )
-
-    pca = PCA(
-        n_components=variance_threshold,
-        svd_solver="full",
+    source_mean = training_features.mean(
+        axis=0,
+        keepdims=True,
     )
 
-    reduced_training_features = (
-        pca.fit_transform(
-            training_features
+    target_mean = testing_features.mean(
+        axis=0,
+        keepdims=True,
+    )
+
+    centered_source = (
+        training_features
+        - source_mean
+    )
+
+    centered_target = (
+        testing_features
+        - target_mean
+    )
+
+    source_covariance = feature_covariance(
+        centered_source
+    )
+
+    target_covariance = feature_covariance(
+        centered_target
+    )
+
+    source_inverse_square_root = (
+        stable_matrix_power(
+            source_covariance,
+            power=-0.5,
+            regularisation=regularisation,
         )
     )
 
-    reduced_testing_features = (
-        pca.transform(
-            testing_features
-        )
+    target_square_root = stable_matrix_power(
+        target_covariance,
+        power=0.5,
+        regularisation=regularisation,
     )
 
-    retained_variance = float(
-        np.sum(
-            pca.explained_variance_ratio_
-        )
+    transformation = (
+        source_inverse_square_root
+        @ target_square_root
     )
+
+    adapted_training = (
+        centered_source
+        @ transformation
+    )
+
+    adapted_testing = centered_target
 
     return (
         np.asarray(
-            reduced_training_features,
+            adapted_training,
             dtype=np.float64,
         ),
         np.asarray(
-            reduced_testing_features,
+            adapted_testing,
             dtype=np.float64,
         ),
-        int(
-            reduced_training_features.shape[1]
-        ),
-        retained_variance,
+    )
+
+
+def adapt_features(
+    method: str,
+    training_features: np.ndarray,
+    testing_features: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Apply the requested unsupervised adaptation method."""
+    if method == "none":
+        return apply_no_adaptation(
+            training_features,
+            testing_features,
+        )
+
+    if method == "mean_alignment":
+        return apply_mean_alignment(
+            training_features,
+            testing_features,
+        )
+
+    if method == "coral":
+        return apply_coral(
+            training_features,
+            testing_features,
+            regularisation=(
+                CORAL_REGULARISATION
+            ),
+        )
+
+    raise ValueError(
+        f"Unknown adaptation method: {method}"
     )
 
 
@@ -324,7 +502,7 @@ def apply_optional_pca(
 def softmax(
     scores: np.ndarray,
 ) -> np.ndarray:
-    """Convert decision scores into normalised confidence values."""
+    """Convert classifier scores into normalised values."""
     scores = np.asarray(
         scores,
         dtype=np.float64,
@@ -338,7 +516,7 @@ def softmax(
             ]
         )
 
-    shifted_scores = (
+    shifted = (
         scores
         - np.max(
             scores,
@@ -347,9 +525,7 @@ def softmax(
         )
     )
 
-    exponentials = np.exp(
-        shifted_scores
-    )
+    exponentials = np.exp(shifted)
 
     return (
         exponentials
@@ -365,7 +541,7 @@ def get_probabilities(
     classifier: LinearDiscriminantAnalysis,
     features: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return classifier probabilities or score-derived probabilities."""
+    """Return class probabilities or score-derived probabilities."""
     classes = np.asarray(
         classifier.classes_
     )
@@ -375,10 +551,8 @@ def get_probabilities(
         "predict_proba",
     ):
         try:
-            probabilities = (
-                classifier.predict_proba(
-                    features
-                )
+            probabilities = classifier.predict_proba(
+                features
             )
 
             return (
@@ -388,7 +562,6 @@ def get_probabilities(
                 ),
                 classes,
             )
-
         except (
             AttributeError,
             NotImplementedError,
@@ -419,7 +592,7 @@ def calculate_metrics(
     np.ndarray,
     np.ndarray,
 ]:
-    """Calculate accuracy, kappa, per-class recall and confusion matrix."""
+    """Calculate four-class evaluation metrics."""
     accuracy = accuracy_score(
         y_true,
         y_pred,
@@ -458,8 +631,7 @@ def calculate_metrics(
 
 def evaluate_fold(
     configuration_id: int,
-    configuration_name: str,
-    pca_variance: float | None,
+    adaptation_method: str,
     test_subject: str,
     training_subjects: list[str],
     X_train: np.ndarray,
@@ -470,7 +642,7 @@ def evaluate_fold(
     dict[str, Any],
     list[dict[str, Any]],
 ]:
-    """Evaluate one PCA configuration on one unseen subject."""
+    """Evaluate one adaptation method on one unseen subject."""
     feature_start = time.perf_counter()
 
     (
@@ -478,56 +650,38 @@ def evaluate_fold(
         testing_features,
         extraction_seconds,
     ) = extract_tangent_features(
-        X_train=X_train,
-        X_test=X_test,
+        X_train,
+        X_test,
     )
 
-    original_feature_count = int(
-        training_features.shape[1]
-    )
+    adaptation_start = time.perf_counter()
 
     (
-        aligned_training_features,
-        aligned_testing_features,
-    ) = apply_mean_alignment(
+        adapted_training_features,
+        adapted_testing_features,
+    ) = adapt_features(
+        method=adaptation_method,
         training_features=training_features,
         testing_features=testing_features,
+    )
+
+    adaptation_seconds = (
+        time.perf_counter()
+        - adaptation_start
     )
 
     scaler = StandardScaler()
 
     scaled_training_features = (
         scaler.fit_transform(
-            aligned_training_features
+            adapted_training_features
         )
     )
 
     scaled_testing_features = (
         scaler.transform(
-            aligned_testing_features
+            adapted_testing_features
         )
-    )
-
-    pca_start = time.perf_counter()
-
-    (
-        final_training_features,
-        final_testing_features,
-        retained_components,
-        retained_variance,
-    ) = apply_optional_pca(
-        training_features=(
-            scaled_training_features
-        ),
-        testing_features=(
-            scaled_testing_features
-        ),
-        variance_threshold=pca_variance,
-    )
-
-    pca_seconds = (
-        time.perf_counter()
-        - pca_start
     )
 
     total_feature_seconds = (
@@ -547,31 +701,24 @@ def evaluate_fold(
     fit_start = time.perf_counter()
 
     classifier.fit(
-        final_training_features,
+        scaled_training_features,
         y_train,
     )
 
-    classifier_fit_seconds = (
+    fit_seconds = (
         time.perf_counter()
         - fit_start
     )
 
-    prediction_start = time.perf_counter()
-
     predicted_labels = classifier.predict(
-        final_testing_features
+        scaled_testing_features
     )
 
     probabilities, classifier_classes = (
         get_probabilities(
             classifier,
-            final_testing_features,
+            scaled_testing_features,
         )
-    )
-
-    prediction_seconds = (
-        time.perf_counter()
-        - prediction_start
     )
 
     (
@@ -580,23 +727,15 @@ def evaluate_fold(
         recalls,
         matrix,
     ) = calculate_metrics(
-        y_true=y_test,
-        y_pred=predicted_labels,
+        y_test,
+        predicted_labels,
     )
 
     subject_result: dict[str, Any] = {
         "configuration_id": configuration_id,
-        "configuration_name": configuration_name,
-        "pca_variance_threshold": (
-            pca_variance
-            if pca_variance is not None
-            else "none"
-        ),
+        "adaptation_method": adaptation_method,
         "covariance_estimator": (
             COVARIANCE_ESTIMATOR
-        ),
-        "adaptation_method": (
-            "mean_alignment"
         ),
         "test_subject": test_subject,
         "training_subjects": "|".join(
@@ -608,14 +747,8 @@ def evaluate_fold(
         "testing_trials": int(
             len(y_test)
         ),
-        "original_tangent_features": (
-            original_feature_count
-        ),
-        "retained_pca_components": int(
-            retained_components
-        ),
-        "retained_variance": float(
-            retained_variance
+        "tangent_features": int(
+            training_features.shape[1]
         ),
         "accuracy": accuracy,
         "accuracy_percent": (
@@ -637,17 +770,14 @@ def evaluate_fold(
         "extraction_seconds": float(
             extraction_seconds
         ),
-        "pca_seconds": float(
-            pca_seconds
+        "adaptation_seconds": float(
+            adaptation_seconds
         ),
         "total_feature_seconds": float(
             total_feature_seconds
         ),
         "classifier_fit_seconds": float(
-            classifier_fit_seconds
-        ),
-        "prediction_seconds": float(
-            prediction_seconds
+            fit_seconds
         ),
     }
 
@@ -688,11 +818,9 @@ def evaluate_fold(
     ):
         prediction_row: dict[str, Any] = {
             "configuration_id": configuration_id,
-            "configuration_name": configuration_name,
-            "pca_variance_threshold": (
-                pca_variance
-                if pca_variance is not None
-                else "none"
+            "adaptation_method": adaptation_method,
+            "covariance_estimator": (
+                COVARIANCE_ESTIMATOR
             ),
             "test_subject": test_subject,
             "trial_index": trial_index,
@@ -742,14 +870,14 @@ def evaluate_fold(
 def aggregate_results(
     subject_results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Aggregate all nine LOSO folds for each PCA configuration."""
+    """Aggregate the nine unseen-subject folds."""
     dataframe = pd.DataFrame(
         subject_results
     )
 
     baseline_group = dataframe[
-        dataframe["configuration_name"]
-        == "no_pca"
+        dataframe["adaptation_method"]
+        == "none"
     ]
 
     baseline_accuracy = float(
@@ -767,18 +895,15 @@ def aggregate_results(
     grouped = dataframe.groupby(
         [
             "configuration_id",
-            "configuration_name",
-            "pca_variance_threshold",
+            "adaptation_method",
         ],
         sort=True,
-        dropna=False,
     )
 
     for group_keys, group in grouped:
         (
             configuration_id,
-            configuration_name,
-            pca_variance_threshold,
+            adaptation_method,
         ) = group_keys
 
         mean_accuracy = float(
@@ -794,93 +919,60 @@ def aggregate_results(
                 "configuration_id": int(
                     configuration_id
                 ),
-                "configuration_name": (
-                    configuration_name
-                ),
-                "pca_variance_threshold": (
-                    pca_variance_threshold
+                "adaptation_method": (
+                    adaptation_method
                 ),
                 "covariance_estimator": (
                     COVARIANCE_ESTIMATOR
                 ),
-                "adaptation_method": (
-                    "mean_alignment"
-                ),
                 "number_of_subjects": int(
                     len(group)
                 ),
-                "mean_accuracy": (
-                    mean_accuracy
-                ),
+                "mean_accuracy": mean_accuracy,
                 "mean_accuracy_percent": (
                     mean_accuracy * 100.0
                 ),
                 "accuracy_standard_deviation_percent": float(
-                    group[
-                        "accuracy"
-                    ].std(
+                    group["accuracy"].std(
                         ddof=1
                     )
                     * 100.0
                 ),
                 "minimum_subject_accuracy_percent": float(
-                    group[
-                        "accuracy"
-                    ].min()
+                    group["accuracy"].min()
                     * 100.0
                 ),
                 "maximum_subject_accuracy_percent": float(
-                    group[
-                        "accuracy"
-                    ].max()
+                    group["accuracy"].max()
                     * 100.0
                 ),
-                "mean_kappa": (
-                    mean_kappa
-                ),
+                "mean_kappa": mean_kappa,
                 "kappa_standard_deviation": float(
-                    group[
-                        "kappa"
-                    ].std(
+                    group["kappa"].std(
                         ddof=1
                     )
                 ),
-                "mean_retained_components": float(
-                    group[
-                        "retained_pca_components"
-                    ].mean()
-                ),
-                "mean_retained_variance": float(
-                    group[
-                        "retained_variance"
-                    ].mean()
-                ),
-                "no_pca_accuracy_percent": (
+                "no_adaptation_accuracy_percent": (
                     baseline_accuracy
                     * 100.0
                 ),
-                "improvement_over_no_pca_percent_points": float(
+                "improvement_over_no_adaptation_percent_points": float(
                     (
                         mean_accuracy
                         - baseline_accuracy
                     )
                     * 100.0
                 ),
-                "no_pca_kappa": (
+                "no_adaptation_kappa": (
                     baseline_kappa
                 ),
                 "kappa_improvement": float(
                     mean_kappa
                     - baseline_kappa
                 ),
-                "mean_pca_seconds": float(
+                "mean_adaptation_seconds": float(
                     group[
-                        "pca_seconds"
-                    ].mean()
-                ),
-                "mean_classifier_fit_seconds": float(
-                    group[
-                        "classifier_fit_seconds"
+                        "adaptation_seconds"
                     ].mean()
                 ),
             }
@@ -904,7 +996,7 @@ def aggregate_results(
 
 
 # ---------------------------------------------------------------------
-# Display
+# Final display
 # ---------------------------------------------------------------------
 
 def print_final_results(
@@ -916,45 +1008,48 @@ def print_final_results(
     ],
     total_seconds: float,
 ) -> None:
-    """Print ranked PCA results."""
+    """Print ranked adaptation results."""
     print()
     print("=" * 100)
     print(
-        "Mean Alignment and PCA Sweep Results"
+        "Unsupervised Tangent-Space Domain Adaptation Results"
     )
     print("=" * 100)
 
     print(
         f"\n{'Rank':<7}"
-        f"{'Configuration':<20}"
+        f"{'Method':<24}"
         f"{'Accuracy':>12}"
         f"{'Kappa':>12}"
-        f"{'Components':>14}"
         f"{'Change':>12}"
     )
 
-    print("-" * 77)
+    print("-" * 67)
 
     for row in configuration_results:
         print(
             f"{row['rank']:<7}"
-            f"{row['configuration_name']:<20}"
+            f"{row['adaptation_method']:<24}"
             f"{row['mean_accuracy_percent']:>11.2f}%"
             f"{row['mean_kappa']:>12.3f}"
-            f"{row['mean_retained_components']:>14.1f}"
-            f"{row['improvement_over_no_pca_percent_points']:>+11.2f}"
+            f"{row['improvement_over_no_adaptation_percent_points']:>+11.2f}"
         )
 
     best = configuration_results[0]
 
     print()
     print("=" * 100)
-    print("Best configuration")
+    print("Best adaptation method")
     print("=" * 100)
 
     print(
-        f"Configuration:         "
-        f"{best['configuration_name']}"
+        f"Method:               "
+        f"{best['adaptation_method']}"
+    )
+
+    print(
+        f"Covariance estimator: "
+        f"{best['covariance_estimator']}"
     )
 
     print(
@@ -968,13 +1063,8 @@ def print_final_results(
     )
 
     print(
-        f"Mean PCA components:  "
-        f"{best['mean_retained_components']:.1f}"
-    )
-
-    print(
-        "Change from no PCA:   "
-        f"{best['improvement_over_no_pca_percent_points']:+.2f} "
+        "Change from none:     "
+        f"{best['improvement_over_no_adaptation_percent_points']:+.2f} "
         "percentage points"
     )
 
@@ -990,14 +1080,13 @@ def print_final_results(
         f"{'Subject':<12}"
         f"{'Accuracy':>12}"
         f"{'Kappa':>12}"
-        f"{'PCA':>8}"
         f"{'Left':>10}"
         f"{'Right':>10}"
         f"{'Feet':>10}"
         f"{'Tongue':>10}"
     )
 
-    print("-" * 84)
+    print("-" * 76)
 
     for row in sorted(
         best_subject_rows,
@@ -1009,7 +1098,6 @@ def print_final_results(
             f"{row['test_subject']:<12}"
             f"{row['accuracy_percent']:>11.2f}%"
             f"{row['kappa']:>12.3f}"
-            f"{row['retained_pca_components']:>8}"
             f"{row['left_hand_recall']:>10.3f}"
             f"{row['right_hand_recall']:>10.3f}"
             f"{row['feet_recall']:>10.3f}"
@@ -1047,7 +1135,7 @@ def print_final_results(
 # ---------------------------------------------------------------------
 
 def main() -> None:
-    """Run the strict LOSO PCA sweep."""
+    """Run strict LOSO domain adaptation evaluation."""
     total_start = time.perf_counter()
 
     RESULTS_DIRECTORY.mkdir(
@@ -1057,39 +1145,34 @@ def main() -> None:
 
     print("=" * 100)
     print(
-        "Strict LOSO: Tangent Mean Alignment and PCA Sweep"
+        "Strict LOSO: Unsupervised Tangent-Space Domain Adaptation"
     )
     print("=" * 100)
 
     print(
-        "\nPreprocessing and alignment:"
+        "\nPreprocessing and alignment source:"
     )
 
     print(
-        "  8-30 Hz filtering"
+        "  scripts.cross_subject.run_broadband_riemannian_sweep.load_subjects"
     )
 
     print(
-        "  0.5-2.5 second epoch"
+        "  scripts.cross_subject.run_cross_subject_evaluation.load_and_align_subject"
     )
 
     print(
-        "  subject-wise Euclidean Alignment"
+        f"\nSubjects: {len(SUBJECTS)}"
     )
 
     print(
-        f"\nSubjects: "
-        f"{len(SUBJECTS)}"
-    )
-
-    print(
-        f"Configurations: "
-        f"{len(PCA_CONFIGURATIONS)}"
+        f"Adaptation methods: "
+        f"{len(ADAPTATION_METHODS)}"
     )
 
     print(
         "Total model evaluations: "
-        f"{len(SUBJECTS) * len(PCA_CONFIGURATIONS)}"
+        f"{len(SUBJECTS) * len(ADAPTATION_METHODS)}"
     )
 
     print(
@@ -1098,11 +1181,13 @@ def main() -> None:
     )
 
     print(
-        "Adaptation method: mean_alignment"
+        f"CORAL regularisation: "
+        f"{CORAL_REGULARISATION}"
     )
 
     print(
-        "\nTarget labels are used only after prediction."
+        "\nTarget labels are used only after prediction "
+        "for evaluation."
     )
 
     loaded_subjects = load_subjects()
@@ -1138,11 +1223,8 @@ def main() -> None:
         dict[str, Any]
     ] = []
 
-    for configuration_id, (
-        configuration_name,
-        pca_variance,
-    ) in enumerate(
-        PCA_CONFIGURATIONS,
+    for configuration_id, adaptation_method in enumerate(
+        ADAPTATION_METHODS,
         start=1,
     ):
         print()
@@ -1151,8 +1233,8 @@ def main() -> None:
         print(
             f"Configuration "
             f"{configuration_id}/"
-            f"{len(PCA_CONFIGURATIONS)}: "
-            f"{configuration_name}"
+            f"{len(ADAPTATION_METHODS)}: "
+            f"{adaptation_method}"
         )
 
         print("#" * 100)
@@ -1217,11 +1299,8 @@ def main() -> None:
                 configuration_id=(
                     configuration_id
                 ),
-                configuration_name=(
-                    configuration_name
-                ),
-                pca_variance=(
-                    pca_variance
+                adaptation_method=(
+                    adaptation_method
                 ),
                 test_subject=test_subject,
                 training_subjects=(
@@ -1249,13 +1328,6 @@ def main() -> None:
             print(
                 f"Kappa:    "
                 f"{subject_result['kappa']:.3f}"
-            )
-
-            print(
-                "Features:  "
-                f"{subject_result['original_tangent_features']} "
-                f"-> "
-                f"{subject_result['retained_pca_components']}"
             )
 
             print(

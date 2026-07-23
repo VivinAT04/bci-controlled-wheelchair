@@ -49,7 +49,7 @@ from sklearn.metrics import (
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
-from scripts.cross_subject.run_cross_subject_evaluation import (
+from bci_wheelchair.cross_subject import (
     CLASS_ORDER,
     load_and_align_subject,
 )

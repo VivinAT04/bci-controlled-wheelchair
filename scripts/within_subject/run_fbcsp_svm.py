@@ -3,7 +3,7 @@ Run FBCSP + nonlinear RBF-SVM using Leave-One-Out Cross Validation (LOOCV)
 for all BCI Competition IV Dataset 2a training subjects.
 
 Run:
-    python -m scripts.within_subject.run_fbcsp_svm_all_subjects
+    python -m scripts.within_subject.run_fbcsp_svm
 """
 
 import warnings
@@ -13,8 +13,7 @@ import numpy as np
 from sklearn.model_selection import LeaveOneOut, cross_val_predict
 from sklearn.metrics import accuracy_score, cohen_kappa_score, confusion_matrix
 
-from bci_wheelchair.data.loading import load_raw_gdf
-from bci_wheelchair.data.preprocessing import preprocess_raw
+from bci_wheelchair.data.processed_loading import load_processed_subject
 from bci_wheelchair.models import make_fbcsp_svm
 
 
@@ -36,18 +35,12 @@ SUBJECTS = [
 
 
 def run_subject(subject_code):
-    path = f"data/raw/{subject_code}.gdf"
-
     print(f"\nLoading {subject_code}...")
 
-    raw = load_raw_gdf(path)
-    X, y = preprocess_raw(
-    raw,
-    fmin=4.0,
-    fmax=40.0,
-    tmin=0.5,
-    tmax=2.5,
-)
+    X, y = load_processed_subject(
+        subject=subject_code,
+        config="4-40",
+    )
 
     print(
         f"Loaded {X.shape[0]} trials, "

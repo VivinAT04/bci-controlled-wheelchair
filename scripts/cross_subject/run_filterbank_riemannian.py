@@ -33,7 +33,7 @@ Frequency bands:
     36-40 Hz
 
 Run:
-    python -m scripts.cross_subject.run_filterbank_riemannian_loso
+    python -m scripts.cross_subject.run_filterbank_riemannian
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ from sklearn.metrics import (
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from scripts.cross_subject.run_cross_subject_evaluation import (
+from bci_wheelchair.cross_subject import (
     CLASS_ORDER,
     load_and_align_subject,
 )

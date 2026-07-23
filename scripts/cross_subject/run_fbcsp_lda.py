@@ -21,7 +21,7 @@ Pipeline:
 
 Run from the project root:
 
-    python -m scripts.cross_subject.run_cross_subject_fbcsp_loso
+    python -m scripts.cross_subject.run_fbcsp_lda
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from sklearn.metrics import (
 
 from bci_wheelchair.commands import CLASS_TO_COMMAND
 from bci_wheelchair.models import DEFAULT_BANDS, make_fbcsp_lda
-from scripts.within_subject.run_fbcsp_all_subjects import load_subject_broadband
+from bci_wheelchair.data.processed_loading import load_processed_subject
 
 
 mne.set_log_level("WARNING")
@@ -100,16 +100,11 @@ def load_all_subjects() -> dict[str, dict[str, np.ndarray]]:
     print("=" * 78)
 
     for subject in SUBJECTS:
-        path = f"data/raw/{subject}.gdf"
+        print(f"Loading processed data for {subject}...")
 
-        print(f"Loading {subject} from {path}...")
-
-        X, y = load_subject_broadband(
-            path,
-            fmin=4.0,
-            fmax=40.0,
-            tmin=0.5,
-            tmax=2.5,
+        X, y = load_processed_subject(
+            subject,
+            config="4-40",
         )
 
         subject_data[subject] = {

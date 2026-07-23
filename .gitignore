@@ -31,4 +31,4 @@ results/*
 .idea/
 
 # Environment variables
-.env.DS_Store
+.env

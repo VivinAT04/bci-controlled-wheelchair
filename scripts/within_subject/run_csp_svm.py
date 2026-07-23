@@ -1,9 +1,9 @@
 """
-Run CSP + LDA using Leave-One-Out Cross Validation (LOOCV)
+Run CSP + nonlinear RBF-SVM using Leave-One-Out Cross Validation (LOOCV)
 for all BCI Competition IV Dataset 2a training subjects.
 
 Run:
-    python -m scripts.within_subject.run_loocv_csp_all_subjects
+    python -m scripts.within_subject.run_csp_svm
 """
 
 import warnings
@@ -11,14 +11,13 @@ import mne
 import numpy as np
 
 from sklearn.pipeline import Pipeline
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
+from sklearn.svm import SVC
 from sklearn.model_selection import LeaveOneOut, cross_val_predict
 from sklearn.metrics import accuracy_score, cohen_kappa_score, confusion_matrix
 
 from mne.decoding import CSP
 
-from bci_wheelchair.data.loading import load_raw_gdf
-from bci_wheelchair.data.preprocessing import preprocess_raw
+from bci_wheelchair.data.processed_loading import load_processed_subject
 
 
 warnings.filterwarnings("ignore")
@@ -38,7 +37,7 @@ SUBJECTS = [
 ]
 
 
-def build_csp_lda():
+def build_csp_svm():
     return Pipeline([
         (
             "csp",
@@ -49,17 +48,26 @@ def build_csp_lda():
                 rank={"eeg": 22},
             ),
         ),
-        ("lda", LDA()),
+        (
+            "svm",
+            SVC(
+                kernel="rbf",
+                C=1.0,
+                gamma="scale",
+                probability=True,
+                random_state=42,
+            ),
+        ),
     ])
 
 
 def run_subject(subject_code):
-    path = f"data/raw/{subject_code}.gdf"
-
     print(f"\nLoading {subject_code}...")
 
-    raw = load_raw_gdf(path)
-    X, y = preprocess_raw(raw)
+    X, y = load_processed_subject(
+        subject=subject_code,
+        config="8-30",
+    )
 
     print(
         f"Loaded {X.shape[0]} trials, "
@@ -67,7 +75,7 @@ def run_subject(subject_code):
         f"{X.shape[2]} samples/trial"
     )
 
-    clf = build_csp_lda()
+    clf = build_csp_svm()
     cv = LeaveOneOut()
 
     print(f"Running LOOCV for {subject_code}...")
@@ -97,7 +105,7 @@ def run_subject(subject_code):
 
 def main():
     print("\n========================================")
-    print("CSP + LDA LOOCV: All Subjects")
+    print("CSP + RBF-SVM LOOCV: All Subjects")
     print("========================================")
 
     results = []
