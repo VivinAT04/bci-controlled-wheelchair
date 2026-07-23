@@ -16,7 +16,7 @@ Important:
     Euclidean Alignment uses only the unlabeled EEG trials of each subject.
 
 Run:
-    python -m scripts.export_cross_subject_ea_regularized
+    python -m scripts.cross_subject.export_cross_subject_ea_regularized
 """
 
 from __future__ import annotations
@@ -39,9 +39,9 @@ from sklearn.metrics import (
 from sklearn.pipeline import Pipeline
 
 from bci_wheelchair.commands import CLASS_TO_COMMAND
-from bci_wheelchair.data_loading import load_raw_gdf
+from bci_wheelchair.data.loading import load_raw_gdf
 from bci_wheelchair.models import DEFAULT_BANDS
-from bci_wheelchair.preprocessing import (
+from bci_wheelchair.data.preprocessing import (
     SFREQ,
     bandpass,
     preprocess_raw,
@@ -71,11 +71,11 @@ TEST_SUBJECT = "A09T"
 DATA_DIRECTORY = Path("data/raw")
 
 OUTPUT_PATH = Path(
-    "results/cross_subject_a09_ea_corrected_bands_predictions.csv"
+    "results/cross_subject/csp_fbcsp/cross_subject_a09_ea_corrected_bands_predictions.csv"
 )
 
 SUMMARY_PATH = Path(
-    "results/cross_subject_a09_ea_corrected_bands_summary.csv"
+    "results/cross_subject/csp_fbcsp/cross_subject_a09_ea_corrected_bands_summary.csv"
 )
 
 FMIN = 8.0
