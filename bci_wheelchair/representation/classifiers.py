@@ -45,7 +45,6 @@ def create_classifier(
     if classifier_name == "linear_svm":
         classifier = SVC(
             kernel="linear",
-            probability=True,
             random_state=random_state,
             **parameters,
         )
@@ -60,7 +59,6 @@ def create_classifier(
     if classifier_name == "rbf_svm":
         classifier = SVC(
             kernel="rbf",
-            probability=True,
             random_state=random_state,
             **parameters,
         )

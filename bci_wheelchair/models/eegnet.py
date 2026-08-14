@@ -1,222 +1,186 @@
-"""Configurable EEGNet architecture for motor-imagery EEG."""
+"""
+Compact EEGNet-style neural network for motor-imagery classification.
+
+Expected input shape:
+
+    (batch, channels, time)
+
+Internally, the model converts this to:
+
+    (batch, 1, channels, time)
+"""
 
 from __future__ import annotations
 
-import math
+from dataclasses import dataclass
 
 import torch
 from torch import nn
 
 
+@dataclass(frozen=True)
+class EEGNetConfig:
+    """Configuration for the EEGNet-style classifier."""
+
+    n_channels: int
+    n_times: int
+    n_classes: int = 4
+
+    temporal_filters: int = 8
+    depth_multiplier: int = 2
+    separable_filters: int = 16
+
+    temporal_kernel_size: int = 64
+    separable_kernel_size: int = 16
+
+    first_pool_size: int = 4
+    second_pool_size: int = 8
+
+    dropout: float = 0.5
+
+
 class EEGNet(nn.Module):
-    """
-    Compact EEGNet architecture for EEG classification.
+    """EEGNet-style model for end-to-end EEG classification."""
 
-    Expected input shape:
-
-        batch × 1 × channels × samples
-    """
-
-    def __init__(
-        self,
-        n_channels: int,
-        n_samples: int,
-        n_classes: int,
-        dropout_rate: float = 0.5,
-        f1: int = 8,
-        depth_multiplier: int = 2,
-        f2: int | None = None,
-        temporal_kernel_size: int = 64,
-        separable_kernel_size: int = 16,
-    ) -> None:
+    def __init__(self, config: EEGNetConfig) -> None:
         super().__init__()
 
-        if n_channels <= 0:
-            raise ValueError("n_channels must be positive.")
+        self.config = config
 
-        if n_samples <= 0:
-            raise ValueError("n_samples must be positive.")
-
-        if n_classes <= 1:
-            raise ValueError(
-                "n_classes must be greater than one."
-            )
-
-        if not 0.0 <= dropout_rate < 1.0:
-            raise ValueError(
-                "dropout_rate must be in the range [0, 1)."
-            )
-
-        if f1 <= 0:
-            raise ValueError("f1 must be positive.")
-
-        if depth_multiplier <= 0:
-            raise ValueError(
-                "depth_multiplier must be positive."
-            )
-
-        if f2 is None:
-            f2 = f1 * depth_multiplier
-
-        if f2 <= 0:
-            raise ValueError("f2 must be positive.")
-
-        self.n_channels = n_channels
-        self.n_samples = n_samples
-        self.n_classes = n_classes
-        self.dropout_rate = dropout_rate
-        self.f1 = f1
-        self.depth_multiplier = depth_multiplier
-        self.f2 = f2
+        depthwise_filters = (
+            config.temporal_filters
+            * config.depth_multiplier
+        )
 
         self.temporal_block = nn.Sequential(
             nn.Conv2d(
                 in_channels=1,
-                out_channels=f1,
-                kernel_size=(1, temporal_kernel_size),
+                out_channels=config.temporal_filters,
+                kernel_size=(1, config.temporal_kernel_size),
                 padding="same",
                 bias=False,
             ),
-            nn.BatchNorm2d(f1),
+            nn.BatchNorm2d(config.temporal_filters),
         )
-
-        spatial_filters = f1 * depth_multiplier
 
         self.spatial_block = nn.Sequential(
             nn.Conv2d(
-                in_channels=f1,
-                out_channels=spatial_filters,
-                kernel_size=(n_channels, 1),
-                groups=f1,
+                in_channels=config.temporal_filters,
+                out_channels=depthwise_filters,
+                kernel_size=(config.n_channels, 1),
+                groups=config.temporal_filters,
                 bias=False,
             ),
-            nn.BatchNorm2d(spatial_filters),
+            nn.BatchNorm2d(depthwise_filters),
             nn.ELU(),
             nn.AvgPool2d(
-                kernel_size=(1, 4),
+                kernel_size=(1, config.first_pool_size)
             ),
-            nn.Dropout(dropout_rate),
+            nn.Dropout(config.dropout),
         )
 
         self.separable_block = nn.Sequential(
             nn.Conv2d(
-                in_channels=spatial_filters,
-                out_channels=spatial_filters,
-                kernel_size=(1, separable_kernel_size),
+                in_channels=depthwise_filters,
+                out_channels=depthwise_filters,
+                kernel_size=(1, config.separable_kernel_size),
                 padding="same",
-                groups=spatial_filters,
+                groups=depthwise_filters,
                 bias=False,
             ),
             nn.Conv2d(
-                in_channels=spatial_filters,
-                out_channels=f2,
+                in_channels=depthwise_filters,
+                out_channels=config.separable_filters,
                 kernel_size=(1, 1),
                 bias=False,
             ),
-            nn.BatchNorm2d(f2),
+            nn.BatchNorm2d(config.separable_filters),
             nn.ELU(),
             nn.AvgPool2d(
-                kernel_size=(1, 8),
+                kernel_size=(1, config.second_pool_size)
             ),
-            nn.Dropout(dropout_rate),
+            nn.Dropout(config.dropout),
         )
 
-        flattened_size = self._determine_flattened_size()
+        flattened_size = self._calculate_flattened_size()
 
         self.classifier = nn.Linear(
             flattened_size,
-            n_classes,
+            config.n_classes,
         )
 
-    def _determine_flattened_size(self) -> int:
-        """Determine classifier input size using a dummy epoch."""
-
+    def _calculate_flattened_size(self) -> int:
+        """Calculate classifier input size using a dummy EEG batch."""
         with torch.no_grad():
-            dummy_input = torch.zeros(
+            dummy = torch.zeros(
                 1,
                 1,
-                self.n_channels,
-                self.n_samples,
+                self.config.n_channels,
+                self.config.n_times,
             )
 
-            dummy_features = self.extract_features(
-                dummy_input
-            )
+            features = self._forward_features(dummy)
 
-        flattened_size = math.prod(
-            dummy_features.shape[1:]
-        )
+        return int(features.flatten(start_dim=1).shape[1])
 
-        if flattened_size <= 0:
-            raise ValueError(
-                "The supplied number of samples is too small "
-                "for the EEGNet pooling configuration."
-            )
+    def _forward_features(
+        self,
+        eeg: torch.Tensor,
+    ) -> torch.Tensor:
+        eeg = self.temporal_block(eeg)
+        eeg = self.spatial_block(eeg)
+        eeg = self.separable_block(eeg)
 
-        return int(flattened_size)
+        return eeg
 
     def extract_features(
         self,
-        X: torch.Tensor,
+        eeg: torch.Tensor,
     ) -> torch.Tensor:
-        """Extract convolutional EEG features."""
+        """
+        Return the learned EEGNet features before classification.
 
-        X = self.temporal_block(X)
-        X = self.spatial_block(X)
-        X = self.separable_block(X)
+        Input shape:
 
-        return X
+            (batch, channels, time)
+        """
+        if eeg.ndim != 3:
+            raise ValueError(
+                "EEG must have shape "
+                "(batch, channels, time), "
+                f"but received {tuple(eeg.shape)}."
+            )
 
-    def forward(
-        self,
-        X: torch.Tensor,
-    ) -> torch.Tensor:
-        """Return unnormalised class scores."""
+        eeg = eeg.unsqueeze(1)
+        features = self._forward_features(eeg)
 
-        X = self.extract_features(X)
-        X = torch.flatten(X, start_dim=1)
+        return features.flatten(start_dim=1)
 
-        return self.classifier(X)
+    def forward(self, eeg: torch.Tensor) -> torch.Tensor:
+        """Return class logits."""
+        features = self.extract_features(eeg)
+
+        return self.classifier(features)
 
 
-def make_eegnet(
+def initialise_eegnet(
     n_channels: int,
-    n_samples: int,
-    n_classes: int,
-    dropout_rate: float = 0.5,
-    f1: int = 8,
+    n_times: int,
+    n_classes: int = 4,
+    temporal_filters: int = 8,
     depth_multiplier: int = 2,
-    f2: int | None = None,
-    temporal_kernel_size: int = 64,
-    separable_kernel_size: int = 16,
-    device: torch.device | str | None = None,
+    separable_filters: int = 16,
+    dropout: float = 0.5,
 ) -> EEGNet:
-    """Create a configurable EEGNet model."""
-
-    model = EEGNet(
+    """Create an EEGNet model using the supplied dataset dimensions."""
+    config = EEGNetConfig(
         n_channels=n_channels,
-        n_samples=n_samples,
+        n_times=n_times,
         n_classes=n_classes,
-        dropout_rate=dropout_rate,
-        f1=f1,
+        temporal_filters=temporal_filters,
         depth_multiplier=depth_multiplier,
-        f2=f2,
-        temporal_kernel_size=temporal_kernel_size,
-        separable_kernel_size=separable_kernel_size,
+        separable_filters=separable_filters,
+        dropout=dropout,
     )
 
-    if device is not None:
-        model = model.to(device)
-
-    return model
-
-
-# Alias matching the terminology used in the experiment scripts.
-initialise_eegnet = make_eegnet
-
-
-__all__ = [
-    "EEGNet",
-    "initialise_eegnet",
-    "make_eegnet",
-]
+    return EEGNet(config)

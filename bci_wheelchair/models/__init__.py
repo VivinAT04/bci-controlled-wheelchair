@@ -1,53 +1,33 @@
-"""Reusable EEG models and classifier pipeline constructors."""
+"""Model package for the BCI wheelchair project.
 
-from .csp import (
-    make_csp_feature_selected_lda,
-    make_csp_feature_selected_svm,
-    make_csp_lda,
-    make_csp_svm,
-)
-from .eegnet import (
-    EEGNet,
-    initialise_eegnet,
-    make_eegnet,
-)
-from .fbcsp import (
-    DEFAULT_BANDS,
-    FilterBankCSP,
-    RegularizedFilterBankCSP,
-    make_fbcsp_feature_selected_lda,
-    make_fbcsp_feature_selected_svm,
-    make_fbcsp_lda,
-    make_fbcsp_svm,
-)
-from .riemannian import (
-    make_riemannian_mdm,
-    make_riemannian_mdm_pipeline,
-    make_tangent_lda,
-    make_tangent_lda_pipeline,
-    make_tangent_svm,
-    make_tangent_svm_pipeline,
-)
+Deep-learning models are imported lazily so classical CSP/FBCSP
+experiments do not unnecessarily load PyTorch.
+"""
 
 __all__ = [
-    "DEFAULT_BANDS",
     "EEGNet",
-    "FilterBankCSP",
-    "RegularizedFilterBankCSP",
+    "EEGNetConfig",
     "initialise_eegnet",
-    "make_csp_feature_selected_lda",
-    "make_csp_feature_selected_svm",
-    "make_csp_lda",
-    "make_csp_svm",
-    "make_eegnet",
-    "make_fbcsp_feature_selected_lda",
-    "make_fbcsp_feature_selected_svm",
-    "make_fbcsp_lda",
-    "make_fbcsp_svm",
-    "make_riemannian_mdm",
-    "make_riemannian_mdm_pipeline",
-    "make_tangent_lda",
-    "make_tangent_lda_pipeline",
-    "make_tangent_svm",
-    "make_tangent_svm_pipeline",
 ]
+
+
+def __getattr__(name):
+    """Load EEGNet components only when explicitly requested."""
+    if name in __all__:
+        from .eegnet import (
+            EEGNet,
+            EEGNetConfig,
+            initialise_eegnet,
+        )
+
+        exports = {
+            "EEGNet": EEGNet,
+            "EEGNetConfig": EEGNetConfig,
+            "initialise_eegnet": initialise_eegnet,
+        }
+
+        return exports[name]
+
+    raise AttributeError(
+        f"module {__name__!r} has no attribute {name!r}"
+    )
