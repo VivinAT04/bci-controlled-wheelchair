@@ -1,19 +1,20 @@
 """
-Within-subject Riemannian MDM evaluation.
+Cross-session evaluation using CSP + RBF-SVM.
 
-Pipeline:
+Protocol:
 
-    EEG epochs
-    -> OAS covariance matrices
-    -> Riemannian Minimum Distance to Mean (MDM)
+    Train: AxxT
+    Test:  AxxE
 
-Evaluation:
+Configuration:
 
-    Leave-One-Out Cross Validation independently for each subject.
+    Band: 8-30 Hz
+    CSP components: 6
+    Classifier: RBF-SVM
 
 Run:
 
-    python -m scripts.within_subject.run_riemannian
+    python -m scripts.cross_session.run_csp_svm
 """
 
 from __future__ import annotations
@@ -23,30 +24,31 @@ from pathlib import Path
 
 import mne
 import numpy as np
+from scipy.io import loadmat
 from sklearn.metrics import (
     accuracy_score,
     cohen_kappa_score,
     confusion_matrix,
     recall_score,
 )
-from sklearn.model_selection import LeaveOneOut, cross_val_predict
 
-from bci_wheelchair.data.processed_loading import load_processed_subject
-from bci_wheelchair.models import make_riemannian_mdm
+from bci_wheelchair.data.loading import load_raw_gdf
+from bci_wheelchair.data.preprocessing import preprocess_raw
+from bci_wheelchair.models import make_csp_svm
 
 
 mne.set_log_level("ERROR")
 
 SUBJECTS = [
-    "A01T",
-    "A02T",
-    "A03T",
-    "A04T",
-    "A05T",
-    "A06T",
-    "A07T",
-    "A08T",
-    "A09T",
+    "A01",
+    "A02",
+    "A03",
+    "A04",
+    "A05",
+    "A06",
+    "A07",
+    "A08",
+    "A09",
 ]
 
 CLASS_ORDER = [
@@ -56,33 +58,105 @@ CLASS_ORDER = [
     "tongue",
 ]
 
-PREPROCESSING = "8-30"
+LABEL_MAP = {
+    1: "left_hand",
+    2: "right_hand",
+    3: "feet",
+    4: "tongue",
+}
+
+FMIN = 8.0
+FMAX = 30.0
+TMIN = 0.5
+TMAX = 2.5
+N_COMPONENTS = 6
 
 RESULTS_DIRECTORY = Path(
-    "results/within_subject/riemannian/mdm"
+    "results/cross_session/csp_svm"
 )
 
 SUBJECT_RESULTS_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_subject_results.csv"
+    / "csp_svm_cross_session_subject_results.csv"
 )
 
 PREDICTIONS_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_predictions.csv"
+    / "csp_svm_cross_session_predictions.csv"
 )
 
 OVERALL_SUMMARY_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_overall_summary.csv"
+    / "csp_svm_cross_session_overall_summary.csv"
 )
+
+
+def preprocess_evaluation_raw(raw) -> np.ndarray:
+    """Preprocess AxxE evaluation-session EEG."""
+
+    raw = raw.copy()
+
+    raw.drop_channels(
+        [
+            "EOG-left",
+            "EOG-central",
+            "EOG-right",
+        ],
+        on_missing="ignore",
+    )
+
+    raw.filter(
+        FMIN,
+        FMAX,
+        fir_design="firwin",
+        verbose=False,
+    )
+
+    events, _ = mne.events_from_annotations(
+        raw,
+        event_id={"783": 1},
+        verbose=False,
+    )
+
+    epochs = mne.Epochs(
+        raw,
+        events,
+        event_id={"783": 1},
+        tmin=TMIN,
+        tmax=TMAX,
+        baseline=None,
+        preload=True,
+        verbose=False,
+    )
+
+    return epochs.get_data()
+
+
+def load_evaluation_labels(
+    label_file: Path,
+) -> np.ndarray:
+    """Load AxxE ground-truth labels."""
+
+    mat_data = loadmat(label_file)
+
+    numeric_labels = (
+        mat_data["classlabel"]
+        .reshape(-1)
+    )
+
+    return np.asarray(
+        [
+            LABEL_MAP[int(label)]
+            for label in numeric_labels
+        ]
+    )
 
 
 def save_csv(
     path: Path,
     rows: list[dict[str, object]],
 ) -> None:
-    """Save dictionaries to CSV."""
+    """Save rows to CSV."""
 
     if not rows:
         return
@@ -92,13 +166,6 @@ def save_csv(
         exist_ok=True,
     )
 
-    fieldnames: list[str] = []
-
-    for row in rows:
-        for key in row:
-            if key not in fieldnames:
-                fieldnames.append(key)
-
     with path.open(
         "w",
         newline="",
@@ -106,20 +173,19 @@ def save_csv(
     ) as file:
         writer = csv.DictWriter(
             file,
-            fieldnames=fieldnames,
-            extrasaction="ignore",
+            fieldnames=list(rows[0].keys()),
         )
 
         writer.writeheader()
         writer.writerows(rows)
 
 
-def build_subject_result(
+def create_subject_result(
     subject: str,
     y_true: np.ndarray,
     y_pred: np.ndarray,
 ) -> dict[str, object]:
-    """Calculate subject-level metrics."""
+    """Calculate metrics for one subject."""
 
     accuracy = accuracy_score(
         y_true,
@@ -145,8 +211,10 @@ def build_subject_result(
         labels=CLASS_ORDER,
     )
 
-    result: dict[str, object] = {
+    result = {
         "subject": subject,
+        "train_session": f"{subject}T",
+        "test_session": f"{subject}E",
         "accuracy": accuracy,
         "accuracy_percent": accuracy * 100.0,
         "kappa": kappa,
@@ -154,10 +222,12 @@ def build_subject_result(
         "right_hand_recall": recalls[1],
         "feet_recall": recalls[2],
         "tongue_recall": recalls[3],
-        "preprocessing": PREPROCESSING,
-        "covariance_estimator": "oas",
-        "classifier": "riemannian_mdm",
-        "evaluation": "within_subject_loocv",
+        "fmin": FMIN,
+        "fmax": FMAX,
+        "tmin": TMIN,
+        "tmax": TMAX,
+        "csp_components": N_COMPONENTS,
+        "classifier": "RBF_SVM",
     }
 
     for true_index, true_label in enumerate(CLASS_ORDER):
@@ -174,7 +244,7 @@ def build_subject_result(
     return result
 
 
-def build_prediction_rows(
+def create_prediction_rows(
     subject: str,
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -194,25 +264,27 @@ def build_prediction_rows(
             {
                 "subject": subject,
                 "trial": trial_index,
+                "train_session": f"{subject}T",
+                "test_session": f"{subject}E",
                 "true_label": true_label,
                 "predicted_label": predicted_label,
                 "correct": (
-                    true_label
-                    == predicted_label
+                    true_label == predicted_label
                 ),
-                "model": "Riemannian_MDM",
-                "evaluation": "within_subject_loocv",
-                "preprocessing": PREPROCESSING,
+                "model": "CSP_RBF_SVM",
+                "fmin": FMIN,
+                "fmax": FMAX,
+                "csp_components": N_COMPONENTS,
             }
         )
 
     return rows
 
 
-def build_overall_summary(
+def create_overall_summary(
     subject_results: list[dict[str, object]],
 ) -> dict[str, object]:
-    """Build overall mean/std summary."""
+    """Create overall summary."""
 
     accuracies = np.asarray(
         [
@@ -229,12 +301,14 @@ def build_overall_summary(
     )
 
     return {
-        "model": "Riemannian_MDM",
-        "evaluation": "within_subject_loocv",
+        "model": "CSP_RBF_SVM",
+        "evaluation": "cross_session_AxxT_to_AxxE",
         "subjects": len(subject_results),
-        "preprocessing": PREPROCESSING,
-        "covariance_estimator": "oas",
-        "metric": "riemann",
+        "fmin": FMIN,
+        "fmax": FMAX,
+        "tmin": TMIN,
+        "tmax": TMAX,
+        "csp_components": N_COMPONENTS,
         "mean_accuracy": float(
             np.mean(accuracies)
         ),
@@ -260,17 +334,20 @@ def build_overall_summary(
 
 
 def main() -> None:
-    """Run within-subject Riemannian MDM evaluation."""
+    """Run CSP + RBF-SVM cross-session evaluation."""
 
     print()
     print("=" * 78)
-    print("Within-Subject Riemannian MDM")
+    print("Cross-Session CSP + RBF-SVM")
     print("=" * 78)
 
-    print("Evaluation: LOOCV independently per subject")
-    print("Preprocessing: 8-30 Hz")
-    print("Covariance estimator: OAS")
-    print("Classifier: Riemannian MDM")
+    print("Protocol: AxxT -> AxxE")
+    print(
+        f"Band: {FMIN:.0f}-{FMAX:.0f} Hz"
+    )
+    print(
+        f"CSP components: {N_COMPONENTS}"
+    )
 
     subject_results = []
     prediction_rows = []
@@ -279,38 +356,80 @@ def main() -> None:
 
         print()
         print("=" * 78)
-        print(f"Running {subject}")
+        print(
+            f"{subject}: "
+            f"{subject}T -> {subject}E"
+        )
         print("=" * 78)
 
-        X, y = load_processed_subject(
-            subject=subject,
-            config=PREPROCESSING,
+        train_file = Path(
+            f"data/raw/{subject}T.gdf"
+        )
+
+        test_file = Path(
+            f"data/raw/{subject}E.gdf"
+        )
+
+        label_file = Path(
+            f"data/labels/{subject}E.mat"
+        )
+
+        raw_train = load_raw_gdf(
+            str(train_file)
+        )
+
+        raw_test = load_raw_gdf(
+            str(test_file)
+        )
+
+        X_train, y_train = preprocess_raw(
+            raw_train,
+            fmin=FMIN,
+            fmax=FMAX,
+            tmin=TMIN,
+            tmax=TMAX,
+        )
+
+        X_test = preprocess_evaluation_raw(
+            raw_test
+        )
+
+        y_test = load_evaluation_labels(
+            label_file
+        )
+
+        if len(X_test) != len(y_test):
+            raise ValueError(
+                f"{subject}: "
+                f"{len(X_test)} epochs but "
+                f"{len(y_test)} labels."
+            )
+
+        print(
+            f"Training trials: {len(y_train)}"
         )
 
         print(
-            f"Trials: {X.shape[0]}, "
-            f"channels: {X.shape[1]}, "
-            f"samples: {X.shape[2]}"
+            f"Testing trials:  {len(y_test)}"
         )
 
-        classifier = make_riemannian_mdm(
-            covariance_estimator="oas",
-            metric="riemann",
+        classifier = make_csp_svm(
+            n_components=N_COMPONENTS,
         )
 
-        cross_validation = LeaveOneOut()
-
-        y_pred = cross_val_predict(
-            classifier,
-            X,
-            y,
-            cv=cross_validation,
+        classifier.fit(
+            X_train,
+            y_train,
         )
 
-        result = build_subject_result(
-            subject,
-            y,
-            y_pred,
+        y_pred = classifier.predict(
+            X_test
+        )
+
+        result = create_subject_result(
+            subject=subject,
+            y_true=y_test,
+            y_pred=y_pred,
         )
 
         subject_results.append(
@@ -318,10 +437,10 @@ def main() -> None:
         )
 
         prediction_rows.extend(
-            build_prediction_rows(
-                subject,
-                y,
-                y_pred,
+            create_prediction_rows(
+                subject=subject,
+                y_true=y_test,
+                y_pred=y_pred,
             )
         )
 
@@ -335,7 +454,7 @@ def main() -> None:
             f"{result['kappa']:.3f}"
         )
 
-    overall_summary = build_overall_summary(
+    overall_summary = create_overall_summary(
         subject_results
     )
 
@@ -356,7 +475,10 @@ def main() -> None:
 
     print()
     print("=" * 78)
-    print("FINAL WITHIN-SUBJECT RIEMANNIAN MDM RESULTS")
+    print(
+        "FINAL CSP + RBF-SVM "
+        "CROSS-SESSION RESULTS"
+    )
     print("=" * 78)
 
     print(

@@ -1,19 +1,21 @@
 """
-Within-subject Riemannian MDM evaluation.
+Within-subject Filter-Bank Riemannian evaluation.
 
 Pipeline:
-
-    EEG epochs
-    -> OAS covariance matrices
-    -> Riemannian Minimum Distance to Mean (MDM)
+    EEG
+    -> multiple frequency bands
+    -> OAS covariance matrices per band
+    -> Riemannian tangent-space features per band
+    -> concatenate features
+    -> StandardScaler
+    -> PCA retaining 90% variance
+    -> Shrinkage LDA
 
 Evaluation:
-
     Leave-One-Out Cross Validation independently for each subject.
 
 Run:
-
-    python -m scripts.within_subject.run_riemannian
+    python -m scripts.within_subject.run_filterbank_riemannian
 """
 
 from __future__ import annotations
@@ -21,8 +23,13 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-import mne
 import numpy as np
+from pyriemann.estimation import Covariances
+from pyriemann.tangentspace import TangentSpace
+from scipy.signal import butter, sosfiltfilt
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.decomposition import PCA
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.metrics import (
     accuracy_score,
     cohen_kappa_score,
@@ -30,12 +37,11 @@ from sklearn.metrics import (
     recall_score,
 )
 from sklearn.model_selection import LeaveOneOut, cross_val_predict
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 from bci_wheelchair.data.processed_loading import load_processed_subject
-from bci_wheelchair.models import make_riemannian_mdm
 
-
-mne.set_log_level("ERROR")
 
 SUBJECTS = [
     "A01T",
@@ -56,25 +62,42 @@ CLASS_ORDER = [
     "tongue",
 ]
 
-PREPROCESSING = "8-30"
+PREPROCESSING = "4-40"
+
+SAMPLING_FREQUENCY = 250.0
+
+FREQUENCY_BANDS = [
+    (4.0, 8.0),
+    (8.0, 12.0),
+    (12.0, 16.0),
+    (16.0, 20.0),
+    (20.0, 24.0),
+    (24.0, 28.0),
+    (28.0, 32.0),
+    (32.0, 36.0),
+    (36.0, 40.0),
+]
+
+FILTER_ORDER = 4
+PCA_VARIANCE = 0.90
 
 RESULTS_DIRECTORY = Path(
-    "results/within_subject/riemannian/mdm"
+    "results/within_subject/riemannian/filterbank"
 )
 
 SUBJECT_RESULTS_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_subject_results.csv"
+    / "filterbank_riemannian_subject_results.csv"
 )
 
 PREDICTIONS_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_predictions.csv"
+    / "filterbank_riemannian_predictions.csv"
 )
 
 OVERALL_SUMMARY_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_overall_summary.csv"
+    / "filterbank_riemannian_overall_summary.csv"
 )
 
 
@@ -82,8 +105,6 @@ def save_csv(
     path: Path,
     rows: list[dict[str, object]],
 ) -> None:
-    """Save dictionaries to CSV."""
-
     if not rows:
         return
 
@@ -114,12 +135,171 @@ def save_csv(
         writer.writerows(rows)
 
 
+def bandpass_filter(
+    epochs: np.ndarray,
+    low_frequency: float,
+    high_frequency: float,
+) -> np.ndarray:
+    nyquist_frequency = (
+        SAMPLING_FREQUENCY / 2.0
+    )
+
+    sos = butter(
+        N=FILTER_ORDER,
+        Wn=[
+            low_frequency / nyquist_frequency,
+            high_frequency / nyquist_frequency,
+        ],
+        btype="bandpass",
+        output="sos",
+    )
+
+    filtered = sosfiltfilt(
+        sos,
+        epochs,
+        axis=-1,
+    )
+
+    return np.asarray(
+        filtered,
+        dtype=np.float64,
+    )
+
+
+class FilterBankRiemannianTransformer(
+    BaseEstimator,
+    TransformerMixin,
+):
+    """Create concatenated tangent-space features across frequency bands."""
+
+    def __init__(
+        self,
+        frequency_bands=None,
+    ):
+        self.frequency_bands = (
+            FREQUENCY_BANDS
+            if frequency_bands is None
+            else frequency_bands
+        )
+
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray | None = None,
+    ):
+        self.covariance_transformers_ = []
+        self.tangent_transformers_ = []
+
+        for low_frequency, high_frequency in self.frequency_bands:
+
+            X_band = bandpass_filter(
+                X,
+                low_frequency,
+                high_frequency,
+            )
+
+            covariance = Covariances(
+                estimator="oas",
+            )
+
+            covariance_matrices = covariance.fit_transform(
+                X_band,
+                y,
+            )
+
+            tangent = TangentSpace(
+                metric="riemann",
+            )
+
+            tangent.fit(
+                covariance_matrices,
+                y,
+            )
+
+            self.covariance_transformers_.append(
+                covariance
+            )
+
+            self.tangent_transformers_.append(
+                tangent
+            )
+
+        return self
+
+    def transform(
+        self,
+        X: np.ndarray,
+    ) -> np.ndarray:
+
+        features = []
+
+        for (
+            low_frequency,
+            high_frequency,
+        ), covariance, tangent in zip(
+            self.frequency_bands,
+            self.covariance_transformers_,
+            self.tangent_transformers_,
+        ):
+
+            X_band = bandpass_filter(
+                X,
+                low_frequency,
+                high_frequency,
+            )
+
+            covariance_matrices = covariance.transform(
+                X_band
+            )
+
+            tangent_features = tangent.transform(
+                covariance_matrices
+            )
+
+            features.append(
+                tangent_features
+            )
+
+        return np.concatenate(
+            features,
+            axis=1,
+        )
+
+
+def build_classifier() -> Pipeline:
+    return Pipeline(
+        [
+            (
+                "filterbank_riemannian",
+                FilterBankRiemannianTransformer(),
+            ),
+            (
+                "scaler",
+                StandardScaler(),
+            ),
+            (
+                "pca",
+                PCA(
+                    n_components=PCA_VARIANCE,
+                    svd_solver="full",
+                ),
+            ),
+            (
+                "lda",
+                LinearDiscriminantAnalysis(
+                    solver="lsqr",
+                    shrinkage="auto",
+                ),
+            ),
+        ]
+    )
+
+
 def build_subject_result(
     subject: str,
     y_true: np.ndarray,
     y_pred: np.ndarray,
 ) -> dict[str, object]:
-    """Calculate subject-level metrics."""
 
     accuracy = accuracy_score(
         y_true,
@@ -155,8 +335,11 @@ def build_subject_result(
         "feet_recall": recalls[2],
         "tongue_recall": recalls[3],
         "preprocessing": PREPROCESSING,
+        "frequency_bands": len(FREQUENCY_BANDS),
         "covariance_estimator": "oas",
-        "classifier": "riemannian_mdm",
+        "tangent_metric": "riemann",
+        "pca_variance": PCA_VARIANCE,
+        "classifier": "shrinkage_lda",
         "evaluation": "within_subject_loocv",
     }
 
@@ -179,7 +362,6 @@ def build_prediction_rows(
     y_true: np.ndarray,
     y_pred: np.ndarray,
 ) -> list[dict[str, object]]:
-    """Create trial-level prediction rows."""
 
     rows = []
 
@@ -200,9 +382,8 @@ def build_prediction_rows(
                     true_label
                     == predicted_label
                 ),
-                "model": "Riemannian_MDM",
+                "model": "FilterBank_Riemannian",
                 "evaluation": "within_subject_loocv",
-                "preprocessing": PREPROCESSING,
             }
         )
 
@@ -212,7 +393,6 @@ def build_prediction_rows(
 def build_overall_summary(
     subject_results: list[dict[str, object]],
 ) -> dict[str, object]:
-    """Build overall mean/std summary."""
 
     accuracies = np.asarray(
         [
@@ -229,12 +409,15 @@ def build_overall_summary(
     )
 
     return {
-        "model": "Riemannian_MDM",
+        "model": "FilterBank_Riemannian",
         "evaluation": "within_subject_loocv",
         "subjects": len(subject_results),
         "preprocessing": PREPROCESSING,
+        "frequency_bands": len(FREQUENCY_BANDS),
         "covariance_estimator": "oas",
-        "metric": "riemann",
+        "tangent_metric": "riemann",
+        "pca_variance": PCA_VARIANCE,
+        "classifier": "shrinkage_lda",
         "mean_accuracy": float(
             np.mean(accuracies)
         ),
@@ -260,17 +443,18 @@ def build_overall_summary(
 
 
 def main() -> None:
-    """Run within-subject Riemannian MDM evaluation."""
-
     print()
     print("=" * 78)
-    print("Within-Subject Riemannian MDM")
+    print("Within-Subject Filter-Bank Riemannian")
     print("=" * 78)
 
     print("Evaluation: LOOCV independently per subject")
-    print("Preprocessing: 8-30 Hz")
+    print("Input preprocessing: 4-40 Hz")
+    print(f"Frequency bands: {len(FREQUENCY_BANDS)}")
     print("Covariance estimator: OAS")
-    print("Classifier: Riemannian MDM")
+    print("Tangent metric: Riemannian")
+    print("PCA: 90% variance")
+    print("Classifier: Shrinkage LDA")
 
     subject_results = []
     prediction_rows = []
@@ -293,10 +477,7 @@ def main() -> None:
             f"samples: {X.shape[2]}"
         )
 
-        classifier = make_riemannian_mdm(
-            covariance_estimator="oas",
-            metric="riemann",
-        )
+        classifier = build_classifier()
 
         cross_validation = LeaveOneOut()
 
@@ -305,6 +486,7 @@ def main() -> None:
             X,
             y,
             cv=cross_validation,
+            n_jobs=-1,
         )
 
         result = build_subject_result(
@@ -356,7 +538,7 @@ def main() -> None:
 
     print()
     print("=" * 78)
-    print("FINAL WITHIN-SUBJECT RIEMANNIAN MDM RESULTS")
+    print("FINAL WITHIN-SUBJECT FILTER-BANK RIEMANNIAN RESULTS")
     print("=" * 78)
 
     print(

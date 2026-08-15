@@ -1,27 +1,31 @@
 """
-Within-subject Riemannian MDM evaluation.
+Strict cross-subject Tuned CSP + LDA evaluation.
 
-Pipeline:
+Protocol:
+    Leave-One-Subject-Out (LOSO)
 
-    EEG epochs
-    -> OAS covariance matrices
-    -> Riemannian Minimum Distance to Mean (MDM)
+For each fold:
+    Train on 8 subjects
+    Test on 1 completely unseen subject
 
-Evaluation:
+Configuration:
+    Preprocessing: 8-30 Hz
+    CSP components: 10
+    Classifier: LDA
 
-    Leave-One-Out Cross Validation independently for each subject.
+This uses the same tuned CSP configuration used for the
+within-subject and cross-session experiments.
 
 Run:
-
-    python -m scripts.within_subject.run_riemannian
+    python -m scripts.cross_subject.run_tuned_csp
 """
 
 from __future__ import annotations
 
 import csv
+import time
 from pathlib import Path
 
-import mne
 import numpy as np
 from sklearn.metrics import (
     accuracy_score,
@@ -29,13 +33,12 @@ from sklearn.metrics import (
     confusion_matrix,
     recall_score,
 )
-from sklearn.model_selection import LeaveOneOut, cross_val_predict
 
-from bci_wheelchair.data.processed_loading import load_processed_subject
-from bci_wheelchair.models import make_riemannian_mdm
+from bci_wheelchair.data.processed_loading import (
+    load_processed_subject,
+)
+from bci_wheelchair.models import make_csp_lda
 
-
-mne.set_log_level("ERROR")
 
 SUBJECTS = [
     "A01T",
@@ -57,24 +60,25 @@ CLASS_ORDER = [
 ]
 
 PREPROCESSING = "8-30"
+N_COMPONENTS = 10
 
 RESULTS_DIRECTORY = Path(
-    "results/within_subject/riemannian/mdm"
+    "results/cross_subject/csp_fbcsp/tuned_csp"
 )
 
 SUBJECT_RESULTS_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_subject_results.csv"
+    / "cross_subject_tuned_csp_loso_subject_results.csv"
 )
 
 PREDICTIONS_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_predictions.csv"
+    / "cross_subject_tuned_csp_loso_predictions.csv"
 )
 
 OVERALL_SUMMARY_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_overall_summary.csv"
+    / "cross_subject_tuned_csp_loso_overall_summary.csv"
 )
 
 
@@ -82,7 +86,7 @@ def save_csv(
     path: Path,
     rows: list[dict[str, object]],
 ) -> None:
-    """Save dictionaries to CSV."""
+    """Save rows to CSV."""
 
     if not rows:
         return
@@ -114,12 +118,88 @@ def save_csv(
         writer.writerows(rows)
 
 
+def load_all_subjects() -> dict[str, dict[str, np.ndarray]]:
+    """Load processed EEG for all subjects."""
+
+    subject_data = {}
+
+    print("=" * 78)
+    print("Loading 8-30 Hz processed EEG data")
+    print("=" * 78)
+
+    for subject in SUBJECTS:
+        print(f"Loading {subject}...")
+
+        X, y = load_processed_subject(
+            subject=subject,
+            config=PREPROCESSING,
+        )
+
+        subject_data[subject] = {
+            "X": np.asarray(X),
+            "y": np.asarray(y),
+        }
+
+        print(
+            f"  trials={X.shape[0]}, "
+            f"channels={X.shape[1]}, "
+            f"samples={X.shape[2]}"
+        )
+
+    return subject_data
+
+
+def create_loso_fold(
+    subject_data: dict[str, dict[str, np.ndarray]],
+    test_subject: str,
+):
+    """Create one strict LOSO fold."""
+
+    training_subjects = [
+        subject
+        for subject in SUBJECTS
+        if subject != test_subject
+    ]
+
+    X_train = np.concatenate(
+        [
+            subject_data[subject]["X"]
+            for subject in training_subjects
+        ],
+        axis=0,
+    )
+
+    y_train = np.concatenate(
+        [
+            subject_data[subject]["y"]
+            for subject in training_subjects
+        ],
+        axis=0,
+    )
+
+    X_test = subject_data[test_subject]["X"]
+    y_test = subject_data[test_subject]["y"]
+
+    return (
+        X_train,
+        y_train,
+        X_test,
+        y_test,
+        training_subjects,
+    )
+
+
 def build_subject_result(
-    subject: str,
+    test_subject: str,
+    training_subjects: list[str],
     y_true: np.ndarray,
     y_pred: np.ndarray,
+    training_trials: int,
+    testing_trials: int,
+    training_seconds: float,
+    prediction_seconds: float,
 ) -> dict[str, object]:
-    """Calculate subject-level metrics."""
+    """Calculate metrics for one LOSO fold."""
 
     accuracy = accuracy_score(
         y_true,
@@ -146,7 +226,10 @@ def build_subject_result(
     )
 
     result: dict[str, object] = {
-        "subject": subject,
+        "test_subject": test_subject,
+        "training_subjects": "|".join(training_subjects),
+        "training_trials": training_trials,
+        "testing_trials": testing_trials,
         "accuracy": accuracy,
         "accuracy_percent": accuracy * 100.0,
         "kappa": kappa,
@@ -154,10 +237,10 @@ def build_subject_result(
         "right_hand_recall": recalls[1],
         "feet_recall": recalls[2],
         "tongue_recall": recalls[3],
+        "csp_components": N_COMPONENTS,
         "preprocessing": PREPROCESSING,
-        "covariance_estimator": "oas",
-        "classifier": "riemannian_mdm",
-        "evaluation": "within_subject_loocv",
+        "training_seconds": training_seconds,
+        "prediction_seconds": prediction_seconds,
     }
 
     for true_index, true_label in enumerate(CLASS_ORDER):
@@ -175,7 +258,8 @@ def build_subject_result(
 
 
 def build_prediction_rows(
-    subject: str,
+    test_subject: str,
+    training_subjects: list[str],
     y_true: np.ndarray,
     y_pred: np.ndarray,
 ) -> list[dict[str, object]]:
@@ -192,16 +276,22 @@ def build_prediction_rows(
     ):
         rows.append(
             {
-                "subject": subject,
+                "test_subject": test_subject,
                 "trial": trial_index,
+                "training_subjects": "|".join(
+                    training_subjects
+                ),
                 "true_label": true_label,
                 "predicted_label": predicted_label,
                 "correct": (
                     true_label
                     == predicted_label
                 ),
-                "model": "Riemannian_MDM",
-                "evaluation": "within_subject_loocv",
+                "model": "Tuned_CSP_LDA",
+                "evaluation": (
+                    "strict_LOSO_cross_subject"
+                ),
+                "csp_components": N_COMPONENTS,
                 "preprocessing": PREPROCESSING,
             }
         )
@@ -212,7 +302,7 @@ def build_prediction_rows(
 def build_overall_summary(
     subject_results: list[dict[str, object]],
 ) -> dict[str, object]:
-    """Build overall mean/std summary."""
+    """Calculate overall LOSO statistics."""
 
     accuracies = np.asarray(
         [
@@ -229,17 +319,19 @@ def build_overall_summary(
     )
 
     return {
-        "model": "Riemannian_MDM",
-        "evaluation": "within_subject_loocv",
+        "model": "Tuned_CSP_LDA",
+        "evaluation": "strict_LOSO_cross_subject",
         "subjects": len(subject_results),
+        "csp_components": N_COMPONENTS,
         "preprocessing": PREPROCESSING,
-        "covariance_estimator": "oas",
-        "metric": "riemann",
         "mean_accuracy": float(
             np.mean(accuracies)
         ),
         "mean_accuracy_percent": float(
             np.mean(accuracies) * 100.0
+        ),
+        "std_accuracy": float(
+            np.std(accuracies)
         ),
         "std_accuracy_percent": float(
             np.std(accuracies) * 100.0
@@ -260,57 +352,100 @@ def build_overall_summary(
 
 
 def main() -> None:
-    """Run within-subject Riemannian MDM evaluation."""
+    """Run strict LOSO Tuned CSP + LDA."""
 
     print()
     print("=" * 78)
-    print("Within-Subject Riemannian MDM")
+    print("Strict Cross-Subject Tuned CSP + LDA")
     print("=" * 78)
 
-    print("Evaluation: LOOCV independently per subject")
-    print("Preprocessing: 8-30 Hz")
-    print("Covariance estimator: OAS")
-    print("Classifier: Riemannian MDM")
+    print(
+        "Protocol: train on 8 subjects, "
+        "test on 1 completely unseen subject"
+    )
+
+    print(
+        f"Preprocessing: {PREPROCESSING}"
+    )
+
+    print(
+        f"CSP components: {N_COMPONENTS}"
+    )
+
+    subject_data = load_all_subjects()
 
     subject_results = []
     prediction_rows = []
 
-    for subject in SUBJECTS:
+    for test_subject in SUBJECTS:
 
         print()
         print("=" * 78)
-        print(f"Running {subject}")
+        print(
+            f"LOSO fold: held out {test_subject}"
+        )
         print("=" * 78)
 
-        X, y = load_processed_subject(
-            subject=subject,
-            config=PREPROCESSING,
+        (
+            X_train,
+            y_train,
+            X_test,
+            y_test,
+            training_subjects,
+        ) = create_loso_fold(
+            subject_data,
+            test_subject,
         )
 
         print(
-            f"Trials: {X.shape[0]}, "
-            f"channels: {X.shape[1]}, "
-            f"samples: {X.shape[2]}"
+            "Training subjects: "
+            + ", ".join(training_subjects)
         )
 
-        classifier = make_riemannian_mdm(
-            covariance_estimator="oas",
-            metric="riemann",
+        print(
+            f"Training trials: {len(y_train)}"
         )
 
-        cross_validation = LeaveOneOut()
+        print(
+            f"Testing trials:  {len(y_test)}"
+        )
 
-        y_pred = cross_val_predict(
-            classifier,
-            X,
-            y,
-            cv=cross_validation,
+        classifier = make_csp_lda(
+            n_components=N_COMPONENTS,
+        )
+
+        training_start = time.perf_counter()
+
+        classifier.fit(
+            X_train,
+            y_train,
+        )
+
+        training_seconds = (
+            time.perf_counter()
+            - training_start
+        )
+
+        prediction_start = time.perf_counter()
+
+        y_pred = classifier.predict(
+            X_test
+        )
+
+        prediction_seconds = (
+            time.perf_counter()
+            - prediction_start
         )
 
         result = build_subject_result(
-            subject,
-            y,
-            y_pred,
+            test_subject=test_subject,
+            training_subjects=training_subjects,
+            y_true=y_test,
+            y_pred=y_pred,
+            training_trials=len(y_train),
+            testing_trials=len(y_test),
+            training_seconds=training_seconds,
+            prediction_seconds=prediction_seconds,
         )
 
         subject_results.append(
@@ -319,19 +454,20 @@ def main() -> None:
 
         prediction_rows.extend(
             build_prediction_rows(
-                subject,
-                y,
-                y_pred,
+                test_subject=test_subject,
+                training_subjects=training_subjects,
+                y_true=y_test,
+                y_pred=y_pred,
             )
         )
 
         print(
-            f"{subject} Accuracy: "
+            f"{test_subject} Accuracy: "
             f"{result['accuracy_percent']:.2f}%"
         )
 
         print(
-            f"{subject} Kappa:    "
+            f"{test_subject} Kappa:    "
             f"{result['kappa']:.3f}"
         )
 
@@ -356,7 +492,9 @@ def main() -> None:
 
     print()
     print("=" * 78)
-    print("FINAL WITHIN-SUBJECT RIEMANNIAN MDM RESULTS")
+    print(
+        "FINAL TUNED CSP + LDA LOSO RESULTS"
+    )
     print("=" * 78)
 
     print(
@@ -369,7 +507,7 @@ def main() -> None:
 
     for result in subject_results:
         print(
-            f"{result['subject']:<10}"
+            f"{result['test_subject']:<10}"
             f"{result['accuracy_percent']:<15.2f}"
             f"{result['kappa']:<12.3f}"
         )

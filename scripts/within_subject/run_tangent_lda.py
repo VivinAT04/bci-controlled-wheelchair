@@ -1,19 +1,17 @@
 """
-Within-subject Riemannian MDM evaluation.
+Within-subject Riemannian Tangent-Space + Shrinkage LDA evaluation.
 
 Pipeline:
-
     EEG epochs
     -> OAS covariance matrices
-    -> Riemannian Minimum Distance to Mean (MDM)
+    -> Riemannian tangent-space projection
+    -> Shrinkage LDA
 
 Evaluation:
-
     Leave-One-Out Cross Validation independently for each subject.
 
 Run:
-
-    python -m scripts.within_subject.run_riemannian
+    python -m scripts.within_subject.run_tangent_lda
 """
 
 from __future__ import annotations
@@ -32,7 +30,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import LeaveOneOut, cross_val_predict
 
 from bci_wheelchair.data.processed_loading import load_processed_subject
-from bci_wheelchair.models import make_riemannian_mdm
+from bci_wheelchair.models import make_tangent_lda
 
 
 mne.set_log_level("ERROR")
@@ -59,22 +57,22 @@ CLASS_ORDER = [
 PREPROCESSING = "8-30"
 
 RESULTS_DIRECTORY = Path(
-    "results/within_subject/riemannian/mdm"
+    "results/within_subject/riemannian/tangent_lda"
 )
 
 SUBJECT_RESULTS_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_subject_results.csv"
+    / "tangent_lda_subject_results.csv"
 )
 
 PREDICTIONS_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_predictions.csv"
+    / "tangent_lda_predictions.csv"
 )
 
 OVERALL_SUMMARY_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_overall_summary.csv"
+    / "tangent_lda_overall_summary.csv"
 )
 
 
@@ -82,8 +80,6 @@ def save_csv(
     path: Path,
     rows: list[dict[str, object]],
 ) -> None:
-    """Save dictionaries to CSV."""
-
     if not rows:
         return
 
@@ -119,7 +115,6 @@ def build_subject_result(
     y_true: np.ndarray,
     y_pred: np.ndarray,
 ) -> dict[str, object]:
-    """Calculate subject-level metrics."""
 
     accuracy = accuracy_score(
         y_true,
@@ -156,7 +151,9 @@ def build_subject_result(
         "tongue_recall": recalls[3],
         "preprocessing": PREPROCESSING,
         "covariance_estimator": "oas",
-        "classifier": "riemannian_mdm",
+        "tangent_metric": "riemann",
+        "lda_solver": "lsqr",
+        "lda_shrinkage": "auto",
         "evaluation": "within_subject_loocv",
     }
 
@@ -179,7 +176,6 @@ def build_prediction_rows(
     y_true: np.ndarray,
     y_pred: np.ndarray,
 ) -> list[dict[str, object]]:
-    """Create trial-level prediction rows."""
 
     rows = []
 
@@ -200,7 +196,7 @@ def build_prediction_rows(
                     true_label
                     == predicted_label
                 ),
-                "model": "Riemannian_MDM",
+                "model": "Riemannian_Tangent_LDA",
                 "evaluation": "within_subject_loocv",
                 "preprocessing": PREPROCESSING,
             }
@@ -212,7 +208,6 @@ def build_prediction_rows(
 def build_overall_summary(
     subject_results: list[dict[str, object]],
 ) -> dict[str, object]:
-    """Build overall mean/std summary."""
 
     accuracies = np.asarray(
         [
@@ -229,12 +224,14 @@ def build_overall_summary(
     )
 
     return {
-        "model": "Riemannian_MDM",
+        "model": "Riemannian_Tangent_LDA",
         "evaluation": "within_subject_loocv",
         "subjects": len(subject_results),
         "preprocessing": PREPROCESSING,
         "covariance_estimator": "oas",
-        "metric": "riemann",
+        "tangent_metric": "riemann",
+        "lda_solver": "lsqr",
+        "lda_shrinkage": "auto",
         "mean_accuracy": float(
             np.mean(accuracies)
         ),
@@ -260,17 +257,16 @@ def build_overall_summary(
 
 
 def main() -> None:
-    """Run within-subject Riemannian MDM evaluation."""
-
     print()
     print("=" * 78)
-    print("Within-Subject Riemannian MDM")
+    print("Within-Subject Riemannian Tangent Space + Shrinkage LDA")
     print("=" * 78)
 
     print("Evaluation: LOOCV independently per subject")
     print("Preprocessing: 8-30 Hz")
     print("Covariance estimator: OAS")
-    print("Classifier: Riemannian MDM")
+    print("Tangent metric: Riemannian")
+    print("Classifier: Shrinkage LDA")
 
     subject_results = []
     prediction_rows = []
@@ -293,9 +289,11 @@ def main() -> None:
             f"samples: {X.shape[2]}"
         )
 
-        classifier = make_riemannian_mdm(
+        classifier = make_tangent_lda(
             covariance_estimator="oas",
-            metric="riemann",
+            tangent_metric="riemann",
+            solver="lsqr",
+            shrinkage="auto",
         )
 
         cross_validation = LeaveOneOut()
@@ -356,7 +354,7 @@ def main() -> None:
 
     print()
     print("=" * 78)
-    print("FINAL WITHIN-SUBJECT RIEMANNIAN MDM RESULTS")
+    print("FINAL WITHIN-SUBJECT TANGENT + LDA RESULTS")
     print("=" * 78)
 
     print(

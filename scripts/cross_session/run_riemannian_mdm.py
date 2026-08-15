@@ -1,19 +1,17 @@
 """
-Within-subject Riemannian MDM evaluation.
+Cross-session Riemannian MDM evaluation.
+
+Protocol:
+    Train on AxxT
+    Test on AxxE
 
 Pipeline:
-
     EEG epochs
     -> OAS covariance matrices
     -> Riemannian Minimum Distance to Mean (MDM)
 
-Evaluation:
-
-    Leave-One-Out Cross Validation independently for each subject.
-
 Run:
-
-    python -m scripts.within_subject.run_riemannian
+    python -m scripts.cross_session.run_riemannian_mdm
 """
 
 from __future__ import annotations
@@ -21,7 +19,6 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-import mne
 import numpy as np
 from sklearn.metrics import (
     accuracy_score,
@@ -29,24 +26,21 @@ from sklearn.metrics import (
     confusion_matrix,
     recall_score,
 )
-from sklearn.model_selection import LeaveOneOut, cross_val_predict
 
 from bci_wheelchair.data.processed_loading import load_processed_subject
 from bci_wheelchair.models import make_riemannian_mdm
 
 
-mne.set_log_level("ERROR")
-
 SUBJECTS = [
-    "A01T",
-    "A02T",
-    "A03T",
-    "A04T",
-    "A05T",
-    "A06T",
-    "A07T",
-    "A08T",
-    "A09T",
+    "A01",
+    "A02",
+    "A03",
+    "A04",
+    "A05",
+    "A06",
+    "A07",
+    "A08",
+    "A09",
 ]
 
 CLASS_ORDER = [
@@ -59,22 +53,22 @@ CLASS_ORDER = [
 PREPROCESSING = "8-30"
 
 RESULTS_DIRECTORY = Path(
-    "results/within_subject/riemannian/mdm"
+    "results/cross_session/riemannian/mdm"
 )
 
 SUBJECT_RESULTS_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_subject_results.csv"
+    / "riemannian_mdm_cross_session_subject_results.csv"
 )
 
 PREDICTIONS_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_predictions.csv"
+    / "riemannian_mdm_cross_session_predictions.csv"
 )
 
 OVERALL_SUMMARY_PATH = (
     RESULTS_DIRECTORY
-    / "riemannian_mdm_overall_summary.csv"
+    / "riemannian_mdm_cross_session_overall_summary.csv"
 )
 
 
@@ -119,7 +113,7 @@ def build_subject_result(
     y_true: np.ndarray,
     y_pred: np.ndarray,
 ) -> dict[str, object]:
-    """Calculate subject-level metrics."""
+    """Calculate metrics for one subject."""
 
     accuracy = accuracy_score(
         y_true,
@@ -147,6 +141,8 @@ def build_subject_result(
 
     result: dict[str, object] = {
         "subject": subject,
+        "train_session": f"{subject}T",
+        "test_session": f"{subject}E",
         "accuracy": accuracy,
         "accuracy_percent": accuracy * 100.0,
         "kappa": kappa,
@@ -156,8 +152,9 @@ def build_subject_result(
         "tongue_recall": recalls[3],
         "preprocessing": PREPROCESSING,
         "covariance_estimator": "oas",
-        "classifier": "riemannian_mdm",
-        "evaluation": "within_subject_loocv",
+        "metric": "riemann",
+        "classifier": "mdm",
+        "evaluation": "cross_session_AxxT_to_AxxE",
     }
 
     for true_index, true_label in enumerate(CLASS_ORDER):
@@ -194,6 +191,8 @@ def build_prediction_rows(
             {
                 "subject": subject,
                 "trial": trial_index,
+                "train_session": f"{subject}T",
+                "test_session": f"{subject}E",
                 "true_label": true_label,
                 "predicted_label": predicted_label,
                 "correct": (
@@ -201,7 +200,7 @@ def build_prediction_rows(
                     == predicted_label
                 ),
                 "model": "Riemannian_MDM",
-                "evaluation": "within_subject_loocv",
+                "evaluation": "cross_session_AxxT_to_AxxE",
                 "preprocessing": PREPROCESSING,
             }
         )
@@ -212,7 +211,7 @@ def build_prediction_rows(
 def build_overall_summary(
     subject_results: list[dict[str, object]],
 ) -> dict[str, object]:
-    """Build overall mean/std summary."""
+    """Calculate overall summary statistics."""
 
     accuracies = np.asarray(
         [
@@ -230,7 +229,7 @@ def build_overall_summary(
 
     return {
         "model": "Riemannian_MDM",
-        "evaluation": "within_subject_loocv",
+        "evaluation": "cross_session_AxxT_to_AxxE",
         "subjects": len(subject_results),
         "preprocessing": PREPROCESSING,
         "covariance_estimator": "oas",
@@ -260,14 +259,14 @@ def build_overall_summary(
 
 
 def main() -> None:
-    """Run within-subject Riemannian MDM evaluation."""
+    """Run cross-session Riemannian MDM evaluation."""
 
     print()
     print("=" * 78)
-    print("Within-Subject Riemannian MDM")
+    print("Cross-Session Riemannian MDM")
     print("=" * 78)
 
-    print("Evaluation: LOOCV independently per subject")
+    print("Protocol: AxxT -> AxxE")
     print("Preprocessing: 8-30 Hz")
     print("Covariance estimator: OAS")
     print("Classifier: Riemannian MDM")
@@ -277,20 +276,33 @@ def main() -> None:
 
     for subject in SUBJECTS:
 
+        train_subject = f"{subject}T"
+        test_subject = f"{subject}E"
+
         print()
         print("=" * 78)
-        print(f"Running {subject}")
+        print(
+            f"{subject}: "
+            f"{train_subject} -> {test_subject}"
+        )
         print("=" * 78)
 
-        X, y = load_processed_subject(
-            subject=subject,
+        X_train, y_train = load_processed_subject(
+            subject=train_subject,
+            config=PREPROCESSING,
+        )
+
+        X_test, y_test = load_processed_subject(
+            subject=test_subject,
             config=PREPROCESSING,
         )
 
         print(
-            f"Trials: {X.shape[0]}, "
-            f"channels: {X.shape[1]}, "
-            f"samples: {X.shape[2]}"
+            f"Training trials: {len(y_train)}"
+        )
+
+        print(
+            f"Testing trials:  {len(y_test)}"
         )
 
         classifier = make_riemannian_mdm(
@@ -298,18 +310,18 @@ def main() -> None:
             metric="riemann",
         )
 
-        cross_validation = LeaveOneOut()
+        classifier.fit(
+            X_train,
+            y_train,
+        )
 
-        y_pred = cross_val_predict(
-            classifier,
-            X,
-            y,
-            cv=cross_validation,
+        y_pred = classifier.predict(
+            X_test
         )
 
         result = build_subject_result(
             subject,
-            y,
+            y_test,
             y_pred,
         )
 
@@ -320,7 +332,7 @@ def main() -> None:
         prediction_rows.extend(
             build_prediction_rows(
                 subject,
-                y,
+                y_test,
                 y_pred,
             )
         )
@@ -356,7 +368,7 @@ def main() -> None:
 
     print()
     print("=" * 78)
-    print("FINAL WITHIN-SUBJECT RIEMANNIAN MDM RESULTS")
+    print("FINAL CROSS-SESSION RIEMANNIAN MDM RESULTS")
     print("=" * 78)
 
     print(
