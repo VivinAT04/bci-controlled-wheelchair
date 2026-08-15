@@ -4,7 +4,7 @@ wheelchair navigation.
 
 Run from the project root:
 
-    python -m scripts.plot_trajectory_heatmaps
+    python -m scripts.simulation.plot_trajectory_heatmaps
 """
 
 from __future__ import annotations

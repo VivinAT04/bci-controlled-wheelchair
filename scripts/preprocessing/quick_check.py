@@ -2,7 +2,7 @@
 Quick end-to-end check: load Subject 1, preprocess it, run CSP+LDA.
 
 Run from the project root:
-    python3 -m scripts.quick_check
+    python -m scripts.preprocessing.quick_check
 """
 
 import numpy as np
@@ -12,8 +12,8 @@ from sklearn.metrics import accuracy_score, cohen_kappa_score, confusion_matrix
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.pipeline import Pipeline
 
-from bci_wheelchair.data_loading import load_raw_gdf
-from bci_wheelchair.preprocessing import preprocess_raw
+from bci_wheelchair.data.loading import load_raw_gdf
+from bci_wheelchair.data.preprocessing import preprocess_raw
 
 
 def main():

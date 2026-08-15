@@ -3,7 +3,7 @@ View raw EEG data from a BCI Competition IV 2a GDF file.
 
 Run from the project root:
 
-    python -m scripts.within_subject.view_eeg
+    python -m scripts.visualisation.view_eeg
 """
 
 from pathlib import Path

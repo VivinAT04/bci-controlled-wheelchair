@@ -7,7 +7,7 @@ import pandas as pd
 
 
 RESULTS_PATH = Path("results/simulation/navigation/navigation_simulation_results.csv")
-OUTPUT_DIR = Path("results/cross_subject/predictions")
+OUTPUT_DIR = Path("results/simulation/navigation")
 
 
 def build_summary(results: pd.DataFrame) -> pd.DataFrame:

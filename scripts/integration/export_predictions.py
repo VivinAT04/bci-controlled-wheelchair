@@ -3,7 +3,7 @@ Export FBCSP + LDA classifier predictions with confidence scores to CSV, for the
 MATLAB wheelchair simulation to consume.
 
 Run from the project root:
-    python3 -m scripts.within_subject.export_predictions
+    python -m scripts.integration.export_predictions
 """
 
 import csv
