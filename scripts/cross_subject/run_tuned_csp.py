@@ -1,43 +1,43 @@
 """
-Strict Leave-One-Subject-Out cross-subject evaluation using Tuned CSP + LDA.
+Strict cross-subject Tuned CSP + LDA evaluation.
 
-For every LOSO fold:
+Protocol:
+    Leave-One-Subject-Out (LOSO)
 
-    Eight subjects -> training set
-    One subject    -> completely unseen test set
+For each fold:
+    Train on 8 subjects
+    Test on 1 completely unseen subject
 
-Tuned configuration:
-
-    EEG band: 8-30 Hz
+Configuration:
+    Preprocessing: 8-30 Hz
     CSP components: 10
     Classifier: LDA
 
-Run from the project root:
+This uses the same tuned CSP configuration used for the
+within-subject and cross-session experiments.
 
+Run:
     python -m scripts.cross_subject.run_tuned_csp
 """
 
 from __future__ import annotations
 
 import csv
+import time
 from pathlib import Path
 
-import mne
 import numpy as np
-from mne.decoding import CSP
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.metrics import (
     accuracy_score,
     cohen_kappa_score,
     confusion_matrix,
     recall_score,
 )
-from sklearn.pipeline import Pipeline
 
-from bci_wheelchair.data.processed_loading import load_processed_subject
-
-
-mne.set_log_level("WARNING")
+from bci_wheelchair.data.processed_loading import (
+    load_processed_subject,
+)
+from bci_wheelchair.models import make_csp_lda
 
 
 SUBJECTS = [
@@ -59,53 +59,67 @@ CLASS_ORDER = [
     "tongue",
 ]
 
-PREPROCESSING_CONFIG = "8-30"
+PREPROCESSING = "8-30"
 N_COMPONENTS = 10
 
 RESULTS_DIRECTORY = Path(
-    "results/cross_subject/csp_fbcsp"
+    "results/cross_subject/csp_fbcsp/tuned_csp"
 )
 
 SUBJECT_RESULTS_PATH = (
     RESULTS_DIRECTORY
-    / "cross_subject_tuned_csp_lda_loso_subject_results.csv"
+    / "cross_subject_tuned_csp_loso_subject_results.csv"
 )
 
 PREDICTIONS_PATH = (
     RESULTS_DIRECTORY
-    / "cross_subject_tuned_csp_lda_loso_predictions.csv"
+    / "cross_subject_tuned_csp_loso_predictions.csv"
 )
 
 OVERALL_SUMMARY_PATH = (
     RESULTS_DIRECTORY
-    / "cross_subject_tuned_csp_lda_loso_overall_summary.csv"
+    / "cross_subject_tuned_csp_loso_overall_summary.csv"
 )
 
 
-def make_tuned_csp_lda() -> Pipeline:
-    """Create the tuned CSP + LDA pipeline."""
+def save_csv(
+    path: Path,
+    rows: list[dict[str, object]],
+) -> None:
+    """Save rows to CSV."""
 
-    return Pipeline(
-        [
-            (
-                "csp",
-                CSP(
-                    n_components=N_COMPONENTS,
-                    reg=None,
-                    log=True,
-                    rank={"eeg": 22},
-                ),
-            ),
-            (
-                "lda",
-                LDA(),
-            ),
-        ]
+    if not rows:
+        return
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
     )
+
+    fieldnames: list[str] = []
+
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+
+    with path.open(
+        "w",
+        newline="",
+        encoding="utf-8",
+    ) as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=fieldnames,
+            extrasaction="ignore",
+        )
+
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def load_all_subjects() -> dict[str, dict[str, np.ndarray]]:
-    """Load processed EEG for all nine subjects."""
+    """Load processed EEG for all subjects."""
 
     subject_data = {}
 
@@ -118,15 +132,12 @@ def load_all_subjects() -> dict[str, dict[str, np.ndarray]]:
 
         X, y = load_processed_subject(
             subject=subject,
-            config=PREPROCESSING_CONFIG,
+            config=PREPROCESSING,
         )
 
-        X = np.asarray(X)
-        y = np.asarray(y)
-
         subject_data[subject] = {
-            "X": X,
-            "y": y,
+            "X": np.asarray(X),
+            "y": np.asarray(y),
         }
 
         print(
@@ -138,11 +149,11 @@ def load_all_subjects() -> dict[str, dict[str, np.ndarray]]:
     return subject_data
 
 
-def get_training_data(
+def create_loso_fold(
     subject_data: dict[str, dict[str, np.ndarray]],
     test_subject: str,
-) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    """Pool the eight non-held-out subjects."""
+):
+    """Create one strict LOSO fold."""
 
     training_subjects = [
         subject
@@ -166,45 +177,29 @@ def get_training_data(
         axis=0,
     )
 
-    return X_train, y_train, training_subjects
+    X_test = subject_data[test_subject]["X"]
+    y_test = subject_data[test_subject]["y"]
 
-
-def save_csv(
-    path: Path,
-    rows: list[dict[str, object]],
-) -> None:
-    """Save dictionary rows to CSV."""
-
-    if not rows:
-        return
-
-    path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
+    return (
+        X_train,
+        y_train,
+        X_test,
+        y_test,
+        training_subjects,
     )
 
-    with path.open(
-        "w",
-        newline="",
-        encoding="utf-8",
-    ) as file:
 
-        writer = csv.DictWriter(
-            file,
-            fieldnames=list(rows[0].keys()),
-        )
-
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def create_subject_result(
+def build_subject_result(
     test_subject: str,
     training_subjects: list[str],
     y_true: np.ndarray,
     y_pred: np.ndarray,
+    training_trials: int,
+    testing_trials: int,
+    training_seconds: float,
+    prediction_seconds: float,
 ) -> dict[str, object]:
-    """Calculate metrics for one held-out subject."""
+    """Calculate metrics for one LOSO fold."""
 
     accuracy = accuracy_score(
         y_true,
@@ -230,13 +225,11 @@ def create_subject_result(
         labels=CLASS_ORDER,
     )
 
-    result = {
+    result: dict[str, object] = {
         "test_subject": test_subject,
         "training_subjects": "|".join(training_subjects),
-        "training_trials": sum(
-            1 for _ in y_true
-        ) * 8,
-        "testing_trials": len(y_true),
+        "training_trials": training_trials,
+        "testing_trials": testing_trials,
         "accuracy": accuracy,
         "accuracy_percent": accuracy * 100.0,
         "kappa": kappa,
@@ -245,7 +238,9 @@ def create_subject_result(
         "feet_recall": recalls[2],
         "tongue_recall": recalls[3],
         "csp_components": N_COMPONENTS,
-        "preprocessing": PREPROCESSING_CONFIG,
+        "preprocessing": PREPROCESSING,
+        "training_seconds": training_seconds,
+        "prediction_seconds": prediction_seconds,
     }
 
     for true_index, true_label in enumerate(CLASS_ORDER):
@@ -262,7 +257,7 @@ def create_subject_result(
     return result
 
 
-def create_prediction_rows(
+def build_prediction_rows(
     test_subject: str,
     training_subjects: list[str],
     y_true: np.ndarray,
@@ -276,17 +271,16 @@ def create_prediction_rows(
         true_label,
         predicted_label,
     ) in enumerate(
-        zip(
-            y_true,
-            y_pred,
-        ),
+        zip(y_true, y_pred),
         start=1,
     ):
-
         rows.append(
             {
                 "test_subject": test_subject,
                 "trial": trial_index,
+                "training_subjects": "|".join(
+                    training_subjects
+                ),
                 "true_label": true_label,
                 "predicted_label": predicted_label,
                 "correct": (
@@ -294,21 +288,21 @@ def create_prediction_rows(
                     == predicted_label
                 ),
                 "model": "Tuned_CSP_LDA",
-                "csp_components": N_COMPONENTS,
-                "preprocessing": PREPROCESSING_CONFIG,
-                "training_subjects": "|".join(
-                    training_subjects
+                "evaluation": (
+                    "strict_LOSO_cross_subject"
                 ),
+                "csp_components": N_COMPONENTS,
+                "preprocessing": PREPROCESSING,
             }
         )
 
     return rows
 
 
-def create_overall_summary(
+def build_overall_summary(
     subject_results: list[dict[str, object]],
 ) -> dict[str, object]:
-    """Create overall LOSO summary."""
+    """Calculate overall LOSO statistics."""
 
     accuracies = np.asarray(
         [
@@ -329,51 +323,36 @@ def create_overall_summary(
         "evaluation": "strict_LOSO_cross_subject",
         "subjects": len(subject_results),
         "csp_components": N_COMPONENTS,
-        "preprocessing": PREPROCESSING_CONFIG,
+        "preprocessing": PREPROCESSING,
         "mean_accuracy": float(
-            np.mean(
-                accuracies
-            )
+            np.mean(accuracies)
         ),
         "mean_accuracy_percent": float(
-            np.mean(
-                accuracies
-            )
-            * 100.0
+            np.mean(accuracies) * 100.0
+        ),
+        "std_accuracy": float(
+            np.std(accuracies)
         ),
         "std_accuracy_percent": float(
-            np.std(
-                accuracies
-            )
-            * 100.0
+            np.std(accuracies) * 100.0
         ),
         "mean_kappa": float(
-            np.mean(
-                kappas
-            )
+            np.mean(kappas)
         ),
         "std_kappa": float(
-            np.std(
-                kappas
-            )
+            np.std(kappas)
         ),
         "minimum_accuracy_percent": float(
-            np.min(
-                accuracies
-            )
-            * 100.0
+            np.min(accuracies) * 100.0
         ),
         "maximum_accuracy_percent": float(
-            np.max(
-                accuracies
-            )
-            * 100.0
+            np.max(accuracies) * 100.0
         ),
     }
 
 
 def main() -> None:
-    """Run strict LOSO tuned CSP evaluation."""
+    """Run strict LOSO Tuned CSP + LDA."""
 
     print()
     print("=" * 78)
@@ -386,7 +365,7 @@ def main() -> None:
     )
 
     print(
-        f"Preprocessing: {PREPROCESSING_CONFIG}"
+        f"Preprocessing: {PREPROCESSING}"
     )
 
     print(
@@ -407,26 +386,20 @@ def main() -> None:
         )
         print("=" * 78)
 
-        X_train, y_train, training_subjects = (
-            get_training_data(
-                subject_data,
-                test_subject,
-            )
+        (
+            X_train,
+            y_train,
+            X_test,
+            y_test,
+            training_subjects,
+        ) = create_loso_fold(
+            subject_data,
+            test_subject,
         )
-
-        X_test = subject_data[
-            test_subject
-        ]["X"]
-
-        y_test = subject_data[
-            test_subject
-        ]["y"]
 
         print(
             "Training subjects: "
-            + ", ".join(
-                training_subjects
-            )
+            + ", ".join(training_subjects)
         )
 
         print(
@@ -437,26 +410,42 @@ def main() -> None:
             f"Testing trials:  {len(y_test)}"
         )
 
-        classifier = make_tuned_csp_lda()
+        classifier = make_csp_lda(
+            n_components=N_COMPONENTS,
+        )
+
+        training_start = time.perf_counter()
 
         classifier.fit(
             X_train,
             y_train,
         )
 
+        training_seconds = (
+            time.perf_counter()
+            - training_start
+        )
+
+        prediction_start = time.perf_counter()
+
         y_pred = classifier.predict(
             X_test
         )
 
-        result = create_subject_result(
+        prediction_seconds = (
+            time.perf_counter()
+            - prediction_start
+        )
+
+        result = build_subject_result(
             test_subject=test_subject,
             training_subjects=training_subjects,
             y_true=y_test,
             y_pred=y_pred,
-        )
-
-        result["training_trials"] = len(
-            y_train
+            training_trials=len(y_train),
+            testing_trials=len(y_test),
+            training_seconds=training_seconds,
+            prediction_seconds=prediction_seconds,
         )
 
         subject_results.append(
@@ -464,7 +453,7 @@ def main() -> None:
         )
 
         prediction_rows.extend(
-            create_prediction_rows(
+            build_prediction_rows(
                 test_subject=test_subject,
                 training_subjects=training_subjects,
                 y_true=y_test,
@@ -482,10 +471,8 @@ def main() -> None:
             f"{result['kappa']:.3f}"
         )
 
-    overall_summary = (
-        create_overall_summary(
-            subject_results
-        )
+    overall_summary = build_overall_summary(
+        subject_results
     )
 
     save_csv(
@@ -506,8 +493,7 @@ def main() -> None:
     print()
     print("=" * 78)
     print(
-        "FINAL TUNED CSP + LDA "
-        "LOSO RESULTS"
+        "FINAL TUNED CSP + LDA LOSO RESULTS"
     )
     print("=" * 78)
 
@@ -535,7 +521,6 @@ def main() -> None:
     )
 
     print()
-
     print(
         "Accuracy standard deviation: "
         f"{overall_summary['std_accuracy_percent']:.2f}%"
@@ -548,15 +533,9 @@ def main() -> None:
 
     print()
     print("Saved:")
-    print(
-        SUBJECT_RESULTS_PATH
-    )
-    print(
-        PREDICTIONS_PATH
-    )
-    print(
-        OVERALL_SUMMARY_PATH
-    )
+    print(SUBJECT_RESULTS_PATH)
+    print(PREDICTIONS_PATH)
+    print(OVERALL_SUMMARY_PATH)
 
 
 if __name__ == "__main__":
