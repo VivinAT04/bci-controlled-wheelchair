@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from bci_wheelchair.experiment_utils import generate_scenarios
+from bci_wheelchair.simulation.scenarios import generate_scenarios
 from bci_wheelchair.simulation import GridEnvironment
 from bci_wheelchair.simulation import run_classifier_simulation
 

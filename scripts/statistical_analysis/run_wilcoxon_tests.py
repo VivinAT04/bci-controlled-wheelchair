@@ -3,7 +3,7 @@ Run Wilcoxon signed-rank tests between within-subject classifiers.
 
 Run from the project root:
 
-    python -m scripts.within_subject.run_wilcoxon_tests
+    python -m scripts.statistical_analysis.run_wilcoxon_tests
 """
 
 from pathlib import Path

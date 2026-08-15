@@ -3,7 +3,7 @@ Interactive EEG-controlled wheelchair grid-size demonstration.
 
 Run from the project root:
 
-    python -m scripts.interactive_grid_size_demo
+    python -m scripts.simulation.interactive_grid_size_demo
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ if sys.platform == "darwin":
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 
-from bci_wheelchair.eeg_sampler import EEGPredictionSampler
+from bci_wheelchair.simulation import EEGPredictionSampler
 
 
 PREDICTIONS_PATH = Path("results/cross_subject_a09_predictions.csv")

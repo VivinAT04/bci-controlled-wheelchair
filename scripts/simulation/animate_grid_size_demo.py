@@ -8,7 +8,7 @@ The animation uses classifier predictions sampled from:
 
 Run from the project root:
 
-    python -m scripts.animate_grid_size_demo
+    python -m scripts.simulation.animate_grid_size_demo
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 
-from bci_wheelchair.eeg_sampler import EEGPredictionSampler
+from bci_wheelchair.simulation import EEGPredictionSampler
 
 
 PREDICTIONS_PATH = Path(

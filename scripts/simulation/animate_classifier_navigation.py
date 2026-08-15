@@ -4,12 +4,12 @@ import time
 
 import matplotlib.pyplot as plt
 
-from bci_wheelchair.eeg_sampler import EEGPredictionSampler
+from bci_wheelchair.simulation import EEGPredictionSampler
 from bci_wheelchair.simulation import (
     GridEnvironment,
     WheelchairState,
 )
-from bci_wheelchair.simulator import run_classifier_simulation
+from bci_wheelchair.simulation import run_classifier_simulation
 
 
 ANIMATION_DELAY = 0.5

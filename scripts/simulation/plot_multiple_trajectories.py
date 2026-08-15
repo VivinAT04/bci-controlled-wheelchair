@@ -9,7 +9,7 @@ This script compares:
 
 Run from the project root:
 
-    python -m scripts.plot_multiple_trajectories
+    python -m scripts.simulation.plot_multiple_trajectories
 """
 
 from __future__ import annotations
@@ -20,14 +20,14 @@ from typing import Sequence
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from bci_wheelchair.eeg_sampler import EEGPredictionSampler
-from bci_wheelchair.random_sampler import RandomPredictionSampler
+from bci_wheelchair.simulation import EEGPredictionSampler
+from bci_wheelchair.simulation import RandomPredictionSampler
 from bci_wheelchair.simulation import (
     GridEnvironment,
     Position,
     WheelchairState,
 )
-from bci_wheelchair.simulator import (
+from bci_wheelchair.simulation import (
     SimulationResult,
     run_classifier_simulation,
 )
