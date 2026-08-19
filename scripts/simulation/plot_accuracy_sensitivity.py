@@ -13,7 +13,9 @@ import pandas as pd
 
 
 INPUT = Path("results/simulation/accuracy_sensitivity/accuracy_sensitivity_summary.csv")
-OUTPUT_DIR = Path("results/simulation/accuracy_sensitivity/accuracy_sensitivity_figures")
+OUTPUT_DIR = Path(
+    "results/dissertation"
+)
 
 
 def save_plot(

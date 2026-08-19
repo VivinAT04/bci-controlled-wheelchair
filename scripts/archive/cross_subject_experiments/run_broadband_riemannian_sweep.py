@@ -49,7 +49,7 @@ from sklearn.metrics import (
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
-from bci_wheelchair.cross_subject import (
+from bci_wheelchair.models.euclidean_alignment import (
     CLASS_ORDER,
     load_and_align_subject,
 )

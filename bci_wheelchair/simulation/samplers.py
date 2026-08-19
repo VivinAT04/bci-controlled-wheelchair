@@ -152,4 +152,8 @@ class RandomPredictionSampler:
         The intended_class argument is accepted so this sampler has the
         same interface as EEGPredictionSampler.
         """
-        return str(self.rng.choice(VALID_CLASSES))
+        return str(
+            self.rng.choice(
+                tuple(sorted(VALID_CLASSES))
+            )
+        )

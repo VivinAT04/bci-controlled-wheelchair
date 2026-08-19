@@ -16,8 +16,15 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 
-INPUT_PATH = Path("results/simulation/grid_size/grid_size_experiment_summary.csv")
-OUTPUT_DIRECTORY = Path("results/simulation/grid_size/grid_size_experiment_figures")
+INPUT_PATH = Path(
+    "results/simulation/grid_size/"
+    "ea_fbcsp_cross_session/"
+    "grid_size_experiment_summary.csv"
+)
+
+OUTPUT_DIRECTORY = Path(
+    "results/dissertation"
+)
 
 
 def save_line_plot(

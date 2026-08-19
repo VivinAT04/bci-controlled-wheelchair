@@ -29,7 +29,7 @@ from sklearn.pipeline import Pipeline
 
 from bci_wheelchair.commands import CLASS_TO_COMMAND
 from bci_wheelchair.data.loading import load_raw_gdf
-from bci_wheelchair.features.fbcsp import RegularizedFilterBankCSP
+from bci_wheelchair.models.fbcsp import RegularizedFilterBankCSP
 from bci_wheelchair.data.preprocessing import preprocess_raw
 
 
