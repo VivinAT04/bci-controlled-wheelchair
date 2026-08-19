@@ -58,7 +58,7 @@ from scripts.cross_subject.run_broadband_riemannian_sweep import (
     load_subjects,
 )
 
-from bci_wheelchair.cross_subject import (
+from bci_wheelchair.models.euclidean_alignment import (
     CLASS_ORDER,
 )
 

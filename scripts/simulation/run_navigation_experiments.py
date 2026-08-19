@@ -23,11 +23,14 @@ CLASSIFIER_SEED = 42
 RANDOM_BASELINE_SEED = 42
 
 PREDICTION_PATH = Path(
-    "results/within_subject/predictions/evaluation_predictions.csv"
+    "results/cross_session/ea_fbcsp_lda/"
+    "ea_fbcsp_lda_cross_session_predictions.csv"
 )
 
 OUTPUT_PATH = Path(
-    "results/simulation/navigation/navigation_simulation_results.csv"
+    "results/simulation/navigation/"
+    "ea_fbcsp_cross_session/"
+    "navigation_simulation_results.csv"
 )
 
 
@@ -56,6 +59,13 @@ def run_experiment(
         records.append(
             {
                 "controller": controller_name,
+                "evaluation": "Cross-Session",
+                "method": (
+                    "EA + FBCSP + Shrinkage LDA"
+                ),
+                "prediction_source": str(
+                    PREDICTION_PATH
+                ),
                 "simulation_id": simulation_id,
                 "start_row": start_state.position[0],
                 "start_col": start_state.position[1],
@@ -198,7 +208,9 @@ def main() -> None:
     )
 
     classifier_records = run_experiment(
-        controller_name="EEG_classifier",
+        controller_name=(
+            "EA_FBCSP_Shrinkage_LDA"
+        ),
         sampler=classifier_sampler,
         scenarios=scenarios,
         environment=environment,

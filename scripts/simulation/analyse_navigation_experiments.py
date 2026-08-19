@@ -6,8 +6,14 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 
-RESULTS_PATH = Path("results/simulation/navigation/navigation_simulation_results.csv")
-OUTPUT_DIR = Path("results/simulation/navigation")
+RESULTS_PATH = Path(
+    "results/simulation/navigation/"
+    "ea_fbcsp_cross_session/"
+    "navigation_simulation_results.csv"
+)
+OUTPUT_DIR = Path(
+    "results/dissertation"
+)
 
 
 def build_summary(results: pd.DataFrame) -> pd.DataFrame:

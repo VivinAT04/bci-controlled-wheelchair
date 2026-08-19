@@ -14,8 +14,20 @@ from sklearn.feature_selection import (
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 
-from bci_wheelchair.features.csp import make_csp_transformer
+from mne.decoding import CSP
 
+
+def make_csp_transformer(
+    n_components: int = 6,
+    regularization=None,
+    log: bool = True,
+) -> CSP:
+    """Create a configured MNE Common Spatial Pattern transformer."""
+    return CSP(
+        n_components=n_components,
+        reg=regularization,
+        log=log,
+    )
 
 GammaValue = Union[str, float]
 
@@ -123,6 +135,7 @@ def make_csp_feature_selected_svm(
 
 
 __all__ = [
+    "make_csp_transformer",
     "make_csp_feature_selected_lda",
     "make_csp_feature_selected_svm",
     "make_csp_lda",

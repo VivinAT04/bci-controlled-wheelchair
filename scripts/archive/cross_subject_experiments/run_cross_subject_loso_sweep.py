@@ -41,7 +41,7 @@ from sklearn.metrics import (
 )
 from sklearn.pipeline import Pipeline
 
-from bci_wheelchair.cross_subject import (
+from bci_wheelchair.models.euclidean_alignment import (
     BANDS,
     CLASS_ORDER,
     RegularizedFilterBankCSP,
