@@ -7,6 +7,7 @@ from typing import Optional, Sequence, Tuple, Union
 from sklearn.discriminant_analysis import (
     LinearDiscriminantAnalysis as LDA,
 )
+from sklearn.dummy import DummyClassifier
 from sklearn.feature_selection import (
     SelectPercentile,
     f_classif,
@@ -215,6 +216,32 @@ def make_fbcsp_lda(
     ])
 
 
+
+def make_fbcsp_dummy(
+    n_components: int = 4,
+    bands: Optional[Sequence[Band]] = None,
+    strategy: str = "stratified",
+    random_state: int = 42,
+) -> Pipeline:
+    """Build Filter-Bank CSP followed by a dummy baseline classifier."""
+
+    return Pipeline([
+        (
+            "fbcsp",
+            FilterBankCSP(
+                n_components=n_components,
+                bands=bands,
+            ),
+        ),
+        (
+            "dummy",
+            DummyClassifier(
+                strategy=strategy,
+                random_state=random_state,
+            ),
+        ),
+    ])
+
 def make_fbcsp_feature_selected_lda(
     n_components: int = 4,
     bands: Optional[Sequence[Band]] = None,
@@ -311,6 +338,7 @@ __all__ = [
     "DEFAULT_BANDS",
     "FilterBankCSP",
     "RegularizedFilterBankCSP",
+    "make_fbcsp_dummy",
     "make_fbcsp_feature_selected_lda",
     "make_fbcsp_feature_selected_svm",
     "make_fbcsp_lda",

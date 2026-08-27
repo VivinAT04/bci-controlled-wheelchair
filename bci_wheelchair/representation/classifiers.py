@@ -6,6 +6,7 @@ from typing import Any
 
 from sklearn.base import ClassifierMixin
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
@@ -14,6 +15,7 @@ from sklearn.svm import SVC
 
 
 SUPPORTED_CLASSIFIERS = (
+    "dummy",
     "lda",
     "linear_svm",
     "rbf_svm",
@@ -31,6 +33,7 @@ def create_classifier(
     Create a classifier for autoencoder latent features.
 
     Supported classifier names:
+        dummy
         lda
         linear_svm
         rbf_svm
@@ -38,6 +41,16 @@ def create_classifier(
         random_forest
     """
     classifier_name = name.strip().lower()
+
+    if classifier_name == "dummy":
+        return DummyClassifier(
+            strategy=parameters.pop(
+                "strategy",
+                "stratified",
+            ),
+            random_state=random_state,
+            **parameters,
+        )
 
     if classifier_name == "lda":
         return LinearDiscriminantAnalysis(**parameters)

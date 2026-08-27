@@ -52,7 +52,7 @@ def build_summary(results: pd.DataFrame) -> pd.DataFrame:
 
 def save_success_rate_plot(results: pd.DataFrame) -> None:
     controller_order = [
-        "EEG_classifier",
+        "EA_FBCSP_RBF_SVM",
         "Random_baseline",
     ]
 
@@ -90,7 +90,7 @@ def save_success_rate_plot(results: pd.DataFrame) -> None:
 
 def save_commands_boxplot(results: pd.DataFrame) -> None:
     controller_order = [
-        "EEG_classifier",
+        "EA_FBCSP_RBF_SVM",
         "Random_baseline",
     ]
 
@@ -136,7 +136,7 @@ def save_successful_commands_boxplot(
     successful = results[results["reached_target"]]
 
     controller_order = [
-        "EEG_classifier",
+        "EA_FBCSP_RBF_SVM",
         "Random_baseline",
     ]
 
@@ -183,7 +183,7 @@ def save_final_distance_boxplot(
     results: pd.DataFrame,
 ) -> None:
     controller_order = [
-        "EEG_classifier",
+        "EA_FBCSP_RBF_SVM",
         "Random_baseline",
     ]
 

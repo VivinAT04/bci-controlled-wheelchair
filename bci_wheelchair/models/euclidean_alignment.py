@@ -21,7 +21,10 @@ from sklearn.decomposition import PCA
 from sklearn.discriminant_analysis import (
     LinearDiscriminantAnalysis as LDA,
 )
+from sklearn.dummy import DummyClassifier
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
 
 from bci_wheelchair.data.preprocessing import (
     SFREQ,
@@ -59,6 +62,21 @@ CLASS_ORDER = [
 
 
 EA_EPSILON = 1e-10
+
+PCA_VARIANCE = 0.90
+
+SVM_C = 1.0
+SVM_GAMMA = "scale"
+
+DUMMY_STRATEGY = "stratified"
+RANDOM_STATE = 42
+
+CLASS_PRIORS = [
+    0.25,
+    0.25,
+    0.25,
+    0.25,
+]
 
 
 def compute_trial_covariance(
@@ -246,12 +264,96 @@ def alignment_identity_error(
     return float(error)
 
 
-def make_ea_regularized_classifier() -> Pipeline:
-    """
-    Build regularized FBCSP followed by PCA (90% retained variance) and shrinkage LDA.
 
-    Euclidean Alignment is applied subject-by-subject before this
-    classifier receives the pooled training data.
+def make_ea_csp_lda() -> Pipeline:
+    """
+    Build EA-aligned CSP followed by shrinkage LDA.
+
+    Euclidean Alignment is applied independently to each
+    subject/session before this pipeline receives the data.
+    """
+    return Pipeline(
+        [
+            (
+                "csp",
+                CSP(
+                    n_components=N_COMPONENTS,
+                    reg=None,
+                    log=True,
+                ),
+            ),
+            (
+                "lda",
+                LDA(
+                    solver="lsqr",
+                    shrinkage="auto",
+                    priors=CLASS_PRIORS,
+                ),
+            ),
+        ]
+    )
+
+
+def make_ea_csp_svm() -> Pipeline:
+    """
+    Build EA-aligned CSP followed by RBF-SVM.
+    """
+    return Pipeline(
+        [
+            (
+                "csp",
+                CSP(
+                    n_components=N_COMPONENTS,
+                    reg=None,
+                    log=True,
+                ),
+            ),
+            (
+                "scaler",
+                StandardScaler(),
+            ),
+            (
+                "svm",
+                SVC(
+                    kernel="rbf",
+                    C=SVM_C,
+                    gamma=SVM_GAMMA,
+                    probability=True,
+                    random_state=RANDOM_STATE,
+                ),
+            ),
+        ]
+    )
+
+
+def make_ea_csp_dummy() -> Pipeline:
+    """
+    Build EA-aligned CSP followed by a stratified dummy baseline.
+    """
+    return Pipeline(
+        [
+            (
+                "csp",
+                CSP(
+                    n_components=N_COMPONENTS,
+                    reg=None,
+                    log=True,
+                ),
+            ),
+            (
+                "dummy",
+                DummyClassifier(
+                    strategy=DUMMY_STRATEGY,
+                    random_state=RANDOM_STATE,
+                ),
+            ),
+        ]
+    )
+
+
+def make_ea_fbcsp_lda() -> Pipeline:
+    """
+    Build EA-aligned regularized FBCSP, PCA90 and shrinkage LDA.
     """
     return Pipeline(
         [
@@ -266,7 +368,7 @@ def make_ea_regularized_classifier() -> Pipeline:
             (
                 "pca",
                 PCA(
-                    n_components=0.9,
+                    n_components=PCA_VARIANCE,
                     svd_solver="full",
                 ),
             ),
@@ -275,16 +377,92 @@ def make_ea_regularized_classifier() -> Pipeline:
                 LDA(
                     solver="lsqr",
                     shrinkage="auto",
-                    priors=[
-                        0.25,
-                        0.25,
-                        0.25,
-                        0.25,
-                    ],
+                    priors=CLASS_PRIORS,
                 ),
             ),
         ]
     )
+
+
+def make_ea_fbcsp_svm() -> Pipeline:
+    """
+    Build EA-aligned regularized FBCSP, PCA90 and RBF-SVM.
+    """
+    return Pipeline(
+        [
+            (
+                "fbcsp",
+                RegularizedFilterBankCSP(
+                    bands=BANDS,
+                    n_components=N_COMPONENTS,
+                    verbose=True,
+                ),
+            ),
+            (
+                "pca",
+                PCA(
+                    n_components=PCA_VARIANCE,
+                    svd_solver="full",
+                ),
+            ),
+            (
+                "scaler",
+                StandardScaler(),
+            ),
+            (
+                "svm",
+                SVC(
+                    kernel="rbf",
+                    C=SVM_C,
+                    gamma=SVM_GAMMA,
+                    probability=True,
+                    random_state=RANDOM_STATE,
+                ),
+            ),
+        ]
+    )
+
+
+def make_ea_fbcsp_dummy() -> Pipeline:
+    """
+    Build EA-aligned regularized FBCSP, PCA90 and
+    stratified dummy baseline.
+    """
+    return Pipeline(
+        [
+            (
+                "fbcsp",
+                RegularizedFilterBankCSP(
+                    bands=BANDS,
+                    n_components=N_COMPONENTS,
+                    verbose=True,
+                ),
+            ),
+            (
+                "pca",
+                PCA(
+                    n_components=PCA_VARIANCE,
+                    svd_solver="full",
+                ),
+            ),
+            (
+                "dummy",
+                DummyClassifier(
+                    strategy=DUMMY_STRATEGY,
+                    random_state=RANDOM_STATE,
+                ),
+            ),
+        ]
+    )
+
+
+# Backward compatibility with the existing dissertation scripts.
+def make_ea_regularized_classifier() -> Pipeline:
+    """
+    Backward-compatible alias for the established
+    EA + Regularized FBCSP + PCA90 + Shrinkage LDA model.
+    """
+    return make_ea_fbcsp_lda()
 
 
 def load_and_align_subject(

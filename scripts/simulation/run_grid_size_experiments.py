@@ -2,7 +2,7 @@
 Evaluate EEG-controlled wheelchair navigation across different grid sizes.
 
 Uses final real classifier predictions from:
-    EA + FBCSP + Shrinkage LDA
+    EA + FBCSP + RBF-SVM
     Cross-Session evaluation.
 
 Run from the project root:
@@ -23,8 +23,8 @@ from bci_wheelchair.simulation import run_classifier_simulation
 
 
 PREDICTIONS_PATH = Path(
-    "results/cross_session/ea_fbcsp_lda/"
-    "ea_fbcsp_lda_cross_session_predictions.csv"
+    "results/cross_session/euclidean_alignment/fbcsp/svm/"
+    "ea_fbcsp_svm_cross_session_predictions.csv"
 )
 
 DETAILED_OUTPUT_PATH = Path(
@@ -108,7 +108,7 @@ def run_grid_experiment(
             {
                 "evaluation": "Cross-Session",
                 "method": (
-                    "EA + FBCSP + Shrinkage LDA"
+                    "EA + FBCSP + RBF-SVM"
                 ),
                 "prediction_source": str(
                     PREDICTIONS_PATH

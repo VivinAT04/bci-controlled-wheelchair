@@ -23,8 +23,8 @@ CLASSIFIER_SEED = 42
 RANDOM_BASELINE_SEED = 42
 
 PREDICTION_PATH = Path(
-    "results/cross_session/ea_fbcsp_lda/"
-    "ea_fbcsp_lda_cross_session_predictions.csv"
+    "results/cross_session/euclidean_alignment/fbcsp/svm/"
+    "ea_fbcsp_svm_cross_session_predictions.csv"
 )
 
 OUTPUT_PATH = Path(
@@ -61,7 +61,7 @@ def run_experiment(
                 "controller": controller_name,
                 "evaluation": "Cross-Session",
                 "method": (
-                    "EA + FBCSP + Shrinkage LDA"
+                    "EA + FBCSP + RBF-SVM"
                 ),
                 "prediction_source": str(
                     PREDICTION_PATH
@@ -209,7 +209,7 @@ def main() -> None:
 
     classifier_records = run_experiment(
         controller_name=(
-            "EA_FBCSP_Shrinkage_LDA"
+            "EA_FBCSP_RBF_SVM"
         ),
         sampler=classifier_sampler,
         scenarios=scenarios,

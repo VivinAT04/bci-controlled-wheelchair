@@ -10,6 +10,7 @@ from pyriemann.tangentspace import TangentSpace
 from sklearn.discriminant_analysis import (
     LinearDiscriminantAnalysis,
 )
+from sklearn.dummy import DummyClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
@@ -117,6 +118,39 @@ def make_tangent_svm(
     ])
 
 
+def make_tangent_dummy(
+    covariance_estimator: str = "oas",
+    tangent_metric: str = "riemann",
+    strategy: str = "stratified",
+    random_state: int = 42,
+) -> Pipeline:
+    """
+    Build covariance, tangent-space projection and a dummy baseline.
+    """
+
+    return Pipeline([
+        (
+            "covariance",
+            Covariances(
+                estimator=covariance_estimator,
+            ),
+        ),
+        (
+            "tangent_space",
+            TangentSpace(
+                metric=tangent_metric,
+            ),
+        ),
+        (
+            "dummy",
+            DummyClassifier(
+                strategy=strategy,
+                random_state=random_state,
+            ),
+        ),
+    ])
+
+
 # Backward-compatible descriptive aliases.
 make_riemannian_mdm_pipeline = make_riemannian_mdm
 make_tangent_lda_pipeline = make_tangent_lda
@@ -127,6 +161,7 @@ __all__ = [
     "make_riemannian_mdm",
     "make_riemannian_mdm_pipeline",
     "make_tangent_lda",
+    "make_tangent_dummy",
     "make_tangent_lda_pipeline",
     "make_tangent_svm",
     "make_tangent_svm_pipeline",
