@@ -4446,761 +4446,1062 @@ class NavigationDemo:
         return False
 
 
+    def _find_static_clearance_route(
+        self,
+        start,
+        target,
+        blocked_cells,
+    ):
+        """
+        Find a shortest safe local route between two classifier
+        trajectory states while respecting the static obstacle
+        clearance region.
+
+        This route is calculated BEFORE animation begins.
+        """
+
+        start = tuple(start)
+        target = tuple(target)
+
+        blocked_cells = {
+            tuple(cell)
+            for cell in blocked_cells
+        }
+
+        if start == target:
+            return [start]
+
+        if target in blocked_cells:
+            return None
+
+        queue = deque([start])
+
+        parent = {
+            start: None
+        }
+
+        # Direction order encourages longer straight-looking
+        # horizontal/vertical sections rather than diagonal-looking
+        # one-cell staircase behaviour.
+        directions = (
+            (0, 1),    # RIGHT
+            (-1, 0),   # UP
+            (0, -1),   # LEFT
+            (1, 0),    # DOWN
+        )
+
+        while queue:
+
+            current = queue.popleft()
+
+            if current == target:
+                break
+
+            for dr, dc in directions:
+
+                neighbour = (
+                    current[0] + dr,
+                    current[1] + dc,
+                )
+
+                row, col = neighbour
+
+                if not (
+                    0 <= row < self.grid_size
+                    and
+                    0 <= col < self.grid_size
+                ):
+                    continue
+
+                if neighbour in blocked_cells:
+                    continue
+
+                if neighbour in parent:
+                    continue
+
+                parent[neighbour] = current
+
+                queue.append(
+                    neighbour
+                )
+
+        if target not in parent:
+            return None
+
+        route = []
+
+        current = target
+
+        while current is not None:
+
+            route.append(
+                current
+            )
+
+            current = parent[
+                current
+            ]
+
+        route.reverse()
+
+        return route
+
+
+    def _apply_static_policy_to_classifier_path(
+        self,
+        classifier_path,
+    ):
+        """
+        Classifier remains the primary controller.
+
+        The pre-evaluated supervisor State -> Action table is used
+        ONLY when the classifier proposes:
+
+            1. entering one of the three red-X cells, or
+            2. leaving the grid.
+
+        No reversal correction.
+        No no-revisit rule.
+        No path smoothing.
+        No correction merely because a classifier command looks bad.
+
+        Therefore a 25% classifier remains visibly noisy.
+        """
+
+        baseline = [
+            tuple(position)
+            for position in classifier_path
+        ]
+
+        if not baseline:
+            return []
+
+        target = tuple(
+            self.result.target
+        )
+
+        obstacles = {
+            tuple(position)
+            for position in getattr(
+                self,
+                "static_obstacle_positions",
+                [],
+            )
+        }
+
+        if len(obstacles) != 3:
+            raise RuntimeError(
+                "Exactly three static obstacles are required. "
+                f"Found {len(obstacles)}."
+            )
+
+        # Displayed Xs and blocked policy states are identical.
+        self.static_policy_blocked_cells = set(
+            obstacles
+        )
+
+        policy = getattr(
+            self,
+            "obstacle_policy_table",
+            {},
+        )
+
+        if not policy:
+            raise RuntimeError(
+                "Pre-evaluated State -> Action policy table "
+                "is unavailable."
+            )
+
+        safe_path = [
+            baseline[0]
+        ]
+
+        classifier_moves = 0
+        x_overrides = 0
+        boundary_overrides = 0
+        stationary_commands = 0
+        malformed_commands = 0
+
+
+        def inside_grid(cell):
+
+            row, col = cell
+
+            return (
+                0 <= row < self.grid_size
+                and
+                0 <= col < self.grid_size
+            )
+
+
+        def adjacent(first, second):
+
+            return (
+                abs(
+                    first[0] - second[0]
+                )
+                +
+                abs(
+                    first[1] - second[1]
+                )
+                == 1
+            )
+
+
+        def policy_move(current):
+            """
+            Read exactly one safe action from the pre-evaluated
+            supervisor policy table.
+            """
+
+            entry = policy.get(
+                current
+            )
+
+            if entry is None:
+                return None
+
+            candidate = entry.get(
+                "next_state"
+            )
+
+            if candidate is None:
+                return None
+
+            candidate = tuple(
+                candidate
+            )
+
+            if not inside_grid(
+                candidate
+            ):
+                return None
+
+            if candidate in obstacles:
+                return None
+
+            if not adjacent(
+                current,
+                candidate,
+            ):
+                return None
+
+            return candidate
+
+
+        # ========================================================
+        # CLASSIFIER COMMANDS
+        # ========================================================
+
+        for index in range(
+            1,
+            len(baseline),
+        ):
+
+            if safe_path[-1] == target:
+                break
+
+            original_previous = (
+                baseline[
+                    index - 1
+                ]
+            )
+
+            original_next = (
+                baseline[
+                    index
+                ]
+            )
+
+            current = (
+                safe_path[-1]
+            )
+
+            raw_dr = (
+                original_next[0]
+                - original_previous[0]
+            )
+
+            raw_dc = (
+                original_next[1]
+                - original_previous[1]
+            )
+
+
+            # ----------------------------------------------------
+            # NO MOVEMENT PREDICTION
+            # ----------------------------------------------------
+
+            if (
+                raw_dr == 0
+                and
+                raw_dc == 0
+            ):
+
+                stationary_commands += 1
+                continue
+
+
+            # ----------------------------------------------------
+            # ONE-CELL CARDINAL COMMAND
+            # ----------------------------------------------------
+
+            if (
+                abs(raw_dr)
+                +
+                abs(raw_dc)
+                == 1
+            ):
+
+                dr = raw_dr
+                dc = raw_dc
+
+            else:
+
+                # Only normalise malformed path entries into one
+                # physical cell. This is representation cleanup,
+                # not classifier-quality correction.
+                malformed_commands += 1
+
+                if abs(raw_dr) >= abs(raw_dc):
+
+                    dr = (
+                        -1
+                        if raw_dr < 0
+                        else 1
+                    )
+
+                    dc = 0
+
+                else:
+
+                    dr = 0
+
+                    dc = (
+                        -1
+                        if raw_dc < 0
+                        else 1
+                    )
+
+
+            proposed = (
+                current[0] + dr,
+                current[1] + dc,
+            )
+
+
+            # ====================================================
+            # ONLY TWO SAFETY CONDITIONS
+            # ====================================================
+
+            hits_x = (
+                proposed in obstacles
+            )
+
+            leaves_grid = (
+                not inside_grid(
+                    proposed
+                )
+            )
+
+
+            # ----------------------------------------------------
+            # NORMAL CLASSIFIER COMMAND
+            # ----------------------------------------------------
+
+            if (
+                not hits_x
+                and
+                not leaves_grid
+            ):
+
+                chosen = proposed
+
+                classifier_moves += 1
+
+
+            # ----------------------------------------------------
+            # ENVIRONMENTAL SAFETY OVERRIDE ONLY
+            # ----------------------------------------------------
+
+            else:
+
+                if hits_x:
+                    x_overrides += 1
+
+                if leaves_grid:
+                    boundary_overrides += 1
+
+                chosen = (
+                    policy_move(
+                        current
+                    )
+                )
+
+                if chosen is None:
+
+                    raise RuntimeError(
+                        "No safe pre-evaluated policy action "
+                        f"exists from state {current}."
+                    )
+
+
+            # ====================================================
+            # HARD FINAL MOVE CHECK
+            # ====================================================
+
+            if chosen in obstacles:
+
+                raise RuntimeError(
+                    "Collision guard failed: attempted to enter "
+                    f"red-X state {chosen}."
+                )
+
+            if not inside_grid(
+                chosen
+            ):
+
+                raise RuntimeError(
+                    "Boundary guard failed."
+                )
+
+            if not adjacent(
+                current,
+                chosen,
+            ):
+
+                raise RuntimeError(
+                    "Invalid physical movement "
+                    f"{current} -> {chosen}. "
+                    "Every physical action must move "
+                    "exactly one neighbouring cell."
+                )
+
+            safe_path.append(
+                chosen
+            )
+
+
+        # ========================================================
+        # FINAL TARGET COMPLETION
+        # ========================================================
+        #
+        # Only needed because an obstacle override can shift the
+        # physical wheelchair away from the original classifier
+        # trajectory.
+        #
+        # Completion uses the SAME table already evaluated before
+        # movement.
+        # ========================================================
+
+        completion_steps = 0
+
+        limit = (
+            self.grid_size
+            * self.grid_size
+            * 2
+        )
+
+        while safe_path[-1] != target:
+
+            current = (
+                safe_path[-1]
+            )
+
+            chosen = (
+                policy_move(
+                    current
+                )
+            )
+
+            if chosen is None:
+
+                raise RuntimeError(
+                    "Pre-evaluated policy table cannot "
+                    f"complete navigation from {current}."
+                )
+
+            if chosen in obstacles:
+
+                raise RuntimeError(
+                    "Target completion attempted to enter "
+                    f"red-X state {chosen}."
+                )
+
+            safe_path.append(
+                chosen
+            )
+
+            completion_steps += 1
+
+            if completion_steps > limit:
+
+                raise RuntimeError(
+                    "Target completion exceeded safety limit."
+                )
+
+
+        # ========================================================
+        # FINAL AUDIT
+        # ========================================================
+
+        collisions = [
+            state
+            for state in safe_path
+            if state in obstacles
+        ]
+
+        if collisions:
+
+            raise RuntimeError(
+                "FINAL COLLISION AUDIT FAILED: "
+                f"{collisions}"
+            )
+
+
+        invalid_moves = []
+
+        for index in range(
+            1,
+            len(safe_path),
+        ):
+
+            previous = (
+                safe_path[
+                    index - 1
+                ]
+            )
+
+            current = (
+                safe_path[
+                    index
+                ]
+            )
+
+            distance = (
+                abs(
+                    current[0]
+                    - previous[0]
+                )
+                +
+                abs(
+                    current[1]
+                    - previous[1]
+                )
+            )
+
+            if distance != 1:
+
+                invalid_moves.append(
+                    (
+                        previous,
+                        current,
+                    )
+                )
+
+        if invalid_moves:
+
+            raise RuntimeError(
+                "FINAL GRID-STEP AUDIT FAILED: "
+                f"{invalid_moves}"
+            )
+
+
+        print()
+        print("=" * 72)
+        print("ENVIRONMENT-ONLY POLICY SAFETY")
+        print("=" * 72)
+
+        print(
+            "Three X states:",
+            sorted(
+                obstacles
+            ),
+        )
+
+        print(
+            "Original classifier steps:",
+            len(baseline) - 1,
+        )
+
+        print(
+            "Classifier moves retained:",
+            classifier_moves,
+        )
+
+        print(
+            "X collision overrides:",
+            x_overrides,
+        )
+
+        print(
+            "Boundary overrides:",
+            boundary_overrides,
+        )
+
+        print(
+            "Stationary predictions:",
+            stationary_commands,
+        )
+
+        print(
+            "Malformed path entries normalised:",
+            malformed_commands,
+        )
+
+        print(
+            "Final policy completion steps:",
+            completion_steps,
+        )
+
+        print(
+            "Final physical steps:",
+            len(safe_path) - 1,
+        )
+
+        print(
+            "X collisions:",
+            0,
+        )
+
+        print(
+            "Every physical action one cell:",
+            "YES",
+        )
+
+        print(
+            "Reached target:",
+            safe_path[-1] == target,
+        )
+
+        print(
+            "Reversal/no-revisit correction:",
+            "DISABLED",
+        )
+
+        print(
+            "Supervisor policy table retained:",
+            "YES",
+        )
+
+        print("=" * 72)
+
+        return safe_path
+
+
+
+
+
+
+
+
+
+
+    # ================================================================
+    # IMMEDIATE GRID BACKTRACK CLEANER
+    # ================================================================
+
+    def _remove_immediate_grid_backtracks(
+        self,
+        path,
+    ):
+        """
+        Remove representation patterns that cause a wheelchair to
+        leave a grid state and immediately return to it.
+
+        Removed:
+            A -> A
+            A -> B -> A
+
+        Preserved:
+            normal corners,
+            longer classifier errors,
+            obstacle behaviour,
+            classifier identity.
+
+        Every retained physical transition remains a one-cell
+        cardinal-grid transition.
+        """
+
+        original = [
+            tuple(position)
+            for position in path
+        ]
+
+        if not original:
+            return []
+
+        cleaned = []
+
+        duplicate_count = 0
+        backtrack_count = 0
+
+        for state in original:
+
+            # ----------------------------------------------------
+            # DUPLICATE:
+            #
+            # A -> A
+            # ----------------------------------------------------
+
+            if (
+                cleaned
+                and
+                state == cleaned[-1]
+            ):
+
+                duplicate_count += 1
+                continue
+
+
+            # ----------------------------------------------------
+            # IMMEDIATE BACKTRACK:
+            #
+            # A -> B -> A
+            #
+            # Remove B and do not append the returning A because
+            # the wheelchair is already represented at A.
+            # ----------------------------------------------------
+
+            if (
+                len(cleaned) >= 2
+                and
+                state == cleaned[-2]
+            ):
+
+                cleaned.pop()
+
+                backtrack_count += 1
+                continue
+
+
+            cleaned.append(
+                state
+            )
+
+
+        # ========================================================
+        # REPEAT UNTIL STABLE
+        #
+        # Example:
+        # A -> B -> A -> C -> A
+        #
+        # Removing one reversal can expose another.
+        # ========================================================
+
+        changed = True
+
+        while changed:
+
+            changed = False
+
+            new_path = []
+
+            for state in cleaned:
+
+                if (
+                    new_path
+                    and
+                    state == new_path[-1]
+                ):
+
+                    duplicate_count += 1
+                    changed = True
+                    continue
+
+                if (
+                    len(new_path) >= 2
+                    and
+                    state == new_path[-2]
+                ):
+
+                    new_path.pop()
+
+                    backtrack_count += 1
+                    changed = True
+                    continue
+
+                new_path.append(
+                    state
+                )
+
+            cleaned = (
+                new_path
+            )
+
+
+        # ========================================================
+        # VALIDATE RETAINED TRANSITIONS
+        # ========================================================
+
+        invalid = []
+
+        for index in range(
+            1,
+            len(cleaned),
+        ):
+
+            previous = (
+                cleaned[
+                    index - 1
+                ]
+            )
+
+            current = (
+                cleaned[
+                    index
+                ]
+            )
+
+            distance = (
+                abs(
+                    current[0]
+                    - previous[0]
+                )
+                +
+                abs(
+                    current[1]
+                    - previous[1]
+                )
+            )
+
+            if distance != 1:
+
+                invalid.append(
+                    (
+                        previous,
+                        current,
+                    )
+                )
+
+        if invalid:
+
+            raise RuntimeError(
+                "Backtrack cleaner found invalid "
+                f"grid transitions: {invalid}"
+            )
+
+
+        print()
+        print("=" * 72)
+        print("GRID BACKTRACK CLEANING")
+        print("=" * 72)
+
+        print(
+            "Original physical states:",
+            len(original),
+        )
+
+        print(
+            "Cleaned physical states:",
+            len(cleaned),
+        )
+
+        print(
+            "Duplicate states removed:",
+            duplicate_count,
+        )
+
+        print(
+            "Immediate A-B-A backtracks removed:",
+            backtrack_count,
+        )
+
+        print(
+            "One-cell transition validation:",
+            "PASSED",
+        )
+
+        print("=" * 72)
+
+        return cleaned
+
     def _run_demo(
         self,
         event=None,
     ) -> None:
-        """Build and play the selected demonstration reliably."""
+        """
+        Run classifier-driven navigation.
 
-        # --------------------------------------------------
-        # HARD UI EVENT GUARD
-        # --------------------------------------------------
-        #
-        # A dropdown selection is handled on mouse release.
-        # Matplotlib can send that same release to an axis that
-        # becomes visible underneath the popup.
-        #
-        # Therefore Run is blocked:
-        #   1. while any dropdown is open, and
-        #   2. briefly after a dropdown item was selected.
-        #
-        # Only a later deliberate click on Run demonstration
-        # is allowed to start navigation.
-        # --------------------------------------------------
+        OBSTACLE OFF
+        ------------
+        Original classifier trajectory.
 
-        if getattr(self, "dropdown_is_open", False):
-            return
+        OBSTACLE ON
+        -----------
+        1. Run the selected classifier first.
+        2. Generate three independent random static Xs.
+        3. Pre-evaluate the complete State -> Action policy table.
+        4. Process the classifier trajectory command-by-command.
+        5. Use policy table only when classifier command is unsafe.
+        """
 
-        if (
-            time.monotonic()
-            < getattr(
-                self,
-                "run_click_block_until",
-                0.0,
-            )
+        if getattr(
+            self,
+            "dropdown_is_open",
+            False,
         ):
-            print(
-                "Ignored dropdown click-through; "
-                "Run demonstration was not started."
-            )
             return
 
-        if getattr(self, "run_active", False):
+        if getattr(
+            self,
+            "run_active",
+            False,
+        ):
             return
 
         self._close_dropdowns()
 
-        # Stop any old timer left from previous versions.
         if self.timer is not None:
+
             try:
                 self.timer.stop()
+
             except Exception:
                 pass
 
         self.timer = None
 
         try:
-            self.result = self._build_result()
 
-            # Save the exact classifier-generated trajectory.
-            # Obstacle ON must behave exactly like OFF until
-            # an actual collision risk is encountered.
-            self.baseline_classifier_path = list(
+            # ====================================================
+            # CLASSIFIER ALWAYS RUNS
+            # ====================================================
+
+            self.result = (
+                self._build_result()
+            )
+
+            classifier_path = list(
                 self.result.path
             )
 
-            if self.obstacle_enabled:
+            # ----------------------------------------------------
+            # PHYSICAL GRID NORMALISATION
+            #
+            # Remove only duplicate states and immediate
+            # A -> B -> A physical backtracks.
+            # ----------------------------------------------------
 
-                # Initialise counters FIRST.
-                self._prepare_moving_obstacle()
+            # Preserve raw classifier trajectory exactly as generated.
+            # No duplicate/backtrack cleaning is applied here.
 
-                # THEN choose the genuine future classifier
-                # interception point and X starting position.
+            self.result.path = list(
+                classifier_path
+            )
+
+
+            self.baseline_classifier_path = list(
+                classifier_path
+            )
+
+
+            print()
+            print("=" * 72)
+            print("CLASSIFIER TRAJECTORY")
+            print("=" * 72)
+
+            print(
+                "Prediction mode:",
+                self.mode,
+            )
+
+            if self.mode == "simulated":
+
+                print(
+                    "Simulated accuracy:",
+                    f"{self.simulated_accuracy * 100:.0f}%",
+                )
+
+            else:
+
+                print(
+                    "Classifier:",
+                    self.method,
+                )
+
+                print(
+                    "Evaluation:",
+                    self.evaluation,
+                )
+
+            print(
+                "Classifier trajectory steps:",
+                len(classifier_path) - 1,
+            )
+
+            print("=" * 72)
+
+
+            # ====================================================
+            # OBSTACLE OFF
+            # ====================================================
+
+            if not self.obstacle_enabled:
+
+                self.static_obstacle_positions = []
+                self.static_obstacle_position = None
+                self.moving_obstacle_position = None
+
+                self.result.path = list(
+                    classifier_path
+                )
+
+                print()
+                print(
+                    "Navigation mode:",
+                    "ORIGINAL CLASSIFIER",
+                )
+
+
+            # ====================================================
+            # OBSTACLE ON
+            # ====================================================
+
+            else:
+
+                # Random 3-X environment +
+                # pre-evaluated supervisor table.
+                self._prepare_static_policy_obstacle()
+
+                # IMPORTANT:
                 #
-                # This order is important:
-                # _prepare_moving_obstacle() must NOT overwrite
-                # the X position selected from the classifier path.
-                self._prepare_guaranteed_crossing()
+                # Do NOT replace classifier path with the
+                # optimal policy route.
+                #
+                # Apply policy only as safety intervention.
+                safe_path = (
+                    self._apply_static_policy_to_classifier_path(
+                        classifier_path
+                    )
+                )
 
-            
+                self.result.path = list(
+                    safe_path
+                )
+
+                print()
+                print(
+                    "Navigation mode:",
+                    "CLASSIFIER + PRE-EVALUATED "
+                    "POLICY SAFETY",
+                )
+
 
         except Exception as error:
-            self.run_active = False
-            self._show_error(str(error))
-            return
-
-        self.current_frame = 0
-        self.paused = False
-        self.run_active = True
-
-
-        self.pause_button.label.set_text(
-            "Pause"
-        )
-
-        # Draw initial frame.
-        self._draw_frame()
-        self.figure.canvas.draw_idle()
-
-        # --------------------------------------------------
-        # RELIABLE PLAYBACK LOOP
-        # --------------------------------------------------
-
-        last_frame = len(self.result.path) - 1
-
-        while (
-            self.run_active
-            and self.result is not None
-            and self.current_frame < last_frame
-        ):
-
-            # Pause keeps GUI responsive.
-            while (
-                self.paused
-                and self.run_active
-                and self.result is not None
-            ):
-                plt.pause(0.05)
-
-            # Reset may have been pressed while paused.
-            if (
-                not self.run_active
-                or self.result is None
-            ):
-                return
-
-            next_frame = self.current_frame + 1
-
-            # Defensive guard because obstacle rerouting may
-            # replace the path with a shorter trajectory.
-            if next_frame >= len(self.result.path):
-                break
-
-            next_position = self.result.path[
-                next_frame
-            ]
-
-            # ----------------------------------------------
-            # SAFETY CONTROLLER
-            #
-            # If a pedestrian currently occupies the next
-            # wheelchair cell, do NOT move the wheelchair.
-            # The pedestrian continues moving and the
-            # wheelchair waits until the path is safe.
-            # ----------------------------------------------
-
-            # Safe to move.
-            # ----------------------------------------------
-            # FAST MOVING OBSTACLE
-            # ----------------------------------------------
-
-            if self.obstacle_enabled:
-
-                self.obstacle_frame_counter += 1
-
-                # Move only once every few wheelchair frames.
-                if (
-                    self.obstacle_frame_counter
-                    >= self.obstacle_move_interval
-                ):
-                    self._move_obstacle_once()
-                    self.obstacle_frame_counter = 0
-
-                # If moving obstacle threatens the next
-                # few classifier-driven cells, make a local
-                # detour only.
-                if self._moving_obstacle_is_near_route():
-
-                    # --------------------------------------
-                    # SAFETY STOP
-                    # --------------------------------------
-                    #
-                    # Simulates the wheelchair detecting the
-                    # obstruction and pausing before executing
-                    # the local avoidance manoeuvre.
-                    #
-                    # No classifier prediction is changed here.
-                    # --------------------------------------
-
-                    if not self.obstacle_safety_pause_done:
-
-                        print()
-                        print(
-                            ">>> SAFETY STOP <<<"
-                        )
-                        print(
-                            "Wheelchair paused before deviation."
-                        )
-
-                        self._draw_frame()
-
-                        plt.pause(
-                            self.obstacle_safety_pause_seconds
-                        )
-
-                        self.obstacle_safety_pause_done = True
-
-                    rerouted = (
-                        self._reroute_around_moving_obstacle()
-                    )
-
-                    if rerouted:
-
-                        last_frame = (
-                            len(self.result.path) - 1
-                        )
-
-                        self._draw_frame()
-
-                        plt.pause(0.10)
-
-                        continue
-
-            # ----------------------------------------------
-            # REACTIVE OBSTACLE DETECTION
-            # ----------------------------------------------
-
-            next_frame = (
-                self.current_frame + 1
-            )
-
-            if (
-                self.obstacle_enabled
-                and
-                self.static_obstacle_position is not None
-                and
-                next_frame < len(self.result.path)
-            ):
-
-                next_position = (
-                    self.result.path[
-                        next_frame
-                    ]
-                )
-
-                if (
-                    next_position
-                    == self.static_obstacle_position
-                ):
-
-                    # Do not enter obstacle cell.
-                    # Re-plan only NOW, when the hazard
-                    # actually blocks the route.
-                    rerouted = (
-                        self._reroute_around_static_obstacle()
-                    )
-
-                    if rerouted:
-
-                        # Path length may have changed.
-                        last_frame = (
-                            len(self.result.path) - 1
-                        )
-
-                        self._draw_frame()
-
-                        # Small visual reaction delay.
-                        plt.pause(0.20)
-
-                        # Start next loop iteration using
-                        # the newly planned route.
-                        continue
-
-            # ----------------------------------------------
-            # HARD COLLISION GUARD
-            # ----------------------------------------------
-            #
-            # The wheelchair is NEVER allowed to enter the
-            # moving obstacle's current grid cell.
-            # ----------------------------------------------
-
-            next_frame = (
-                self.current_frame + 1
-            )
-
-            if (
-                self.obstacle_enabled
-                and
-                self.moving_obstacle_position is not None
-                and
-                next_frame < len(self.result.path)
-            ):
-
-                next_position = (
-                    self.result.path[
-                        next_frame
-                    ]
-                )
-
-                if (
-                    next_position
-                    == self.moving_obstacle_position
-                ):
-
-                    print()
-                    print(
-                        ">>> DIRECT COLLISION PREVENTED <<<"
-                    )
-
-                    rerouted = (
-                        self._reroute_around_moving_obstacle()
-                    )
-
-                    self._draw_frame()
-
-                    # Short reaction pause.
-                    plt.pause(0.12)
-
-                    if rerouted:
-
-                        # Rerouting changes self.result.path.
-                        # Refresh the final valid frame index
-                        # before continuing playback.
-                        last_frame = (
-                            len(self.result.path) - 1
-                        )
-
-                        continue
-
-                    # No safe route yet:
-                    # remain stationary instead of crossing X.
-                    continue
-
-            # ----------------------------------------------
-            # NORMAL CLASSIFIER TRAJECTORY
-            # ----------------------------------------------
-
-            # ==============================================
-            # HARD MOVING-OBSTACLE SAFETY GATE
-            # ==============================================
-            #
-            # IMPORTANT:
-            #
-            # self.result.path is still the genuine classifier
-            # trajectory.
-            #
-            # We inspect ONLY the next cell before executing it.
-            # If stationary X occupies that cell, the classifier
-            # movement is temporarily prevented and the safety
-            # controller must generate a local detour.
-            # ==============================================
-
-            next_frame = self.current_frame + 1
-
-            if (
-                self.obstacle_enabled
-                and
-                self.obstacle_phase == "blocked"
-                and
-                self.moving_obstacle_position is not None
-                and
-                next_frame < len(self.result.path)
-            ):
-
-                next_position = (
-                    self.result.path[
-                        next_frame
-                    ]
-                )
-
-                obstacle_position = (
-                    self.moving_obstacle_position
-                )
-
-                # ------------------------------------------
-                # DIRECT COLLISION
-                # ------------------------------------------
-
-                if next_position == obstacle_position:
-
-                    print()
-                    print("=" * 70)
-                    print(
-                        ">>> HARD COLLISION PREVENTION <<<"
-                    )
-                    print(
-                        "Wheelchair:",
-                        self.result.path[
-                            self.current_frame
-                        ],
-                    )
-                    print(
-                        "Next classifier cell:",
-                        next_position,
-                    )
-                    print(
-                        "Obstacle:",
-                        obstacle_position,
-                    )
-                    print(
-                        "NORMAL MOVE BLOCKED"
-                    )
-                    print("=" * 70)
-
-                    # --------------------------------------
-                    # STOP FIRST
-                    # --------------------------------------
-
-                    if not self.obstacle_safety_pause_done:
-
-                        self._draw_frame()
-
-                        print(
-                            "Wheelchair stopping..."
-                        )
-
-                        plt.pause(
-                            self.obstacle_safety_pause_seconds
-                        )
-
-                        self.obstacle_safety_pause_done = True
-
-                    # --------------------------------------
-                    # FORCE LOCAL DETOUR
-                    # --------------------------------------
-
-                    rerouted = (
-                        self._reroute_around_moving_obstacle()
-                    )
-
-                    if rerouted:
-
-                        print(
-                            "Safety detour generated."
-                        )
-
-                        # IMPORTANT:
-                        # Do NOT increment current_frame here.
-                        #
-                        # The next loop iteration will execute
-                        # the first SAFE detour cell instead.
-                        self._draw_frame()
-
-                        plt.pause(0.15)
-
-                        continue
-
-                    # --------------------------------------
-                    # NO SAFE DETOUR?
-                    #
-                    # WAIT. NEVER CROSS X.
-                    # --------------------------------------
-
-                    print(
-                        "No safe detour available yet."
-                    )
-                    print(
-                        "Wheelchair remains stopped."
-                    )
-
-                    self._draw_frame()
-
-                    plt.pause(0.20)
-
-                    continue
-
-            # ==============================================
-            # NORMAL CLASSIFIER MOVEMENT
-            # ==============================================
-            #
-            # This happens only when the next cell is safe.
-            # ==============================================
-
-            self.current_frame += 1
-
-            # ==============================================
-            # RELEASE X ONLY AFTER THE WHEELCHAIR HAS
-            # COMPLETED THE DETOUR AND MOVED 3 MORE CELLS
-            # ==============================================
-
-            if (
-                self.obstacle_enabled
-                and
-                getattr(
-                    self,
-                    "obstacle_phase",
-                    None,
-                ) == "detouring"
-            ):
-
-                release_frame = getattr(
-                    self,
-                    "obstacle_release_frame",
-                    None,
-                )
-
-                if (
-                    release_frame is not None
-                    and
-                    self.current_frame >= release_frame
-                ):
-
-                    # Wheelchair has physically executed the
-                    # detour and travelled the required extra
-                    # frames. X can now move again.
-                    self.obstacle_phase = "stationary"
-                    self.obstacle_crossing_done = True
-                    self.obstacle_intercept_arrived = False
-                    self.obstacle_safety_pause_done = False
-
-                    print()
-                    print("=" * 70)
-                    print(
-                        ">>> WHEELCHAIR SAFELY PASSED X <<<"
-                    )
-                    print(
-                        "Wheelchair completed the obstacle "
-                        "avoidance manoeuvre."
-                    )
-                    print(
-                        "X REMAINS PERMANENTLY STATIONARY."
-                    )
-                    print(
-                        "Wheelchair continues on the original "
-                        "classifier-driven route."
-                    )
-                    print("=" * 70)
-
-            self._draw_frame()
-
-            plt.pause(
-                max(
-                    FRAME_INTERVAL_MS / 1000.0,
-                    0.001,
-                )
-            )
-
-        # --------------------------------------------------
-        # FINISHED
-        # --------------------------------------------------
-
-        if (
-            self.result is not None
-            and self.current_frame >= last_frame
-        ):
-            self.current_frame = last_frame
-
-            self._draw_frame()
 
             self.run_active = False
-            self.paused = False
 
-            self.pause_button.label.set_text(
-                "Pause"
+            self._show_error(
+                str(error)
             )
 
-            self.figure.canvas.draw_idle()
-
-
-    def _advance_frame(self) -> None:
-        """Legacy callback retained for compatibility."""
-        return
-
-
-    def _draw_frame(self) -> None:
-        """Draw the current navigation state."""
-
-        if self.result is None:
             return
 
-        axis = self.navigation_axis
-        axis.clear()
+        self._play_current_policy_result()
 
-        axis.set_xlim(
-            -0.5,
-            self.grid_size - 0.5,
-        )
 
-        axis.set_ylim(
-            self.grid_size - 0.5,
-            -0.5,
-        )
 
-        axis.set_aspect("equal")
-
-        axis.set_xticks(
-            np.arange(
-                -0.5,
-                self.grid_size,
-                1,
-            ),
-            minor=True,
-        )
-
-        axis.set_yticks(
-            np.arange(
-                -0.5,
-                self.grid_size,
-                1,
-            ),
-            minor=True,
-        )
-
-        axis.grid(
-            which="minor",
-            linewidth=0.5,
-            alpha=0.45,
-        )
-
-        axis.tick_params(
-            which="both",
-            bottom=False,
-            left=False,
-            labelbottom=False,
-            labelleft=False,
-        )
-
-        visible_path = self.result.path[
-            : self.current_frame + 1
-        ]
-
-        rows = [
-            position[0]
-            for position in visible_path
-        ]
-
-        columns = [
-            position[1]
-            for position in visible_path
-        ]
-
-        axis.plot(
-            columns,
-            rows,
-            linewidth=2,
-            label="Wheelchair path",
-        )
-
-        start = self.result.start_state.position
-        target = self.result.target
-        current_position = visible_path[-1]
-
-        axis.scatter(
-            start[1],
-            start[0],
-            marker="s",
-            s=130,
-            label="Start",
-        )
-
-        axis.scatter(
-            target[1],
-            target[0],
-            marker="*",
-            s=220,
-            label="Target",
-        )
-
-        axis.scatter(
-            current_position[1],
-            current_position[0],
-            marker="o",
-            s=150,
-            label="Wheelchair",
-        )
-
-        # --------------------------------------------------
-        # STATIC GREEN OBSTACLE
-        # --------------------------------------------------
-
-        if (
-            self.obstacle_enabled
-            and self.moving_obstacle_position is not None
-        ):
-            obstacle_row, obstacle_col = (
-                self.moving_obstacle_position
-            )
-
-            axis.scatter(
-                obstacle_col,
-                obstacle_row,
-                marker="X",
-                s=300,
-                color="red",
-                linewidths=2.2,
-                label="Obstacle",
-                zorder=10,
-            )
-
-        axis.set_title(
-            f"{self.grid_size} × {self.grid_size} grid"
-            f"   |   Step {self.current_frame}",
-            fontsize=16,
-            pad=12,
-        )
-
-        axis.legend(
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.03),
-            ncol=4,
-        )
-
-        self._update_result_information()
-
-        self.figure.canvas.draw_idle()
-
-    def _update_result_information(self) -> None:
-        """Display minimal navigation status."""
-
-        if self.result is None:
-            return
-
-        last_frame = len(self.result.path) - 1
-
-        animation_complete = (
-            self.current_frame >= last_frame
-        )
-
-        if animation_complete:
-            status = "NAVIGATION COMPLETE"
-
-            reached = (
-                "YES"
-                if self.result.reached_target
-                else "NO"
-            )
-        else:
-            status = "NAVIGATION IN PROGRESS"
-            reached = "In progress"
-
-        information = (
-            f"{status}\n"
-            f"Step: {self.current_frame} / {last_frame}\n"
-            f"Reached target: {reached}"
-        )
-
-        self.information_axis.clear()
-        self.information_axis.axis("off")
-
-        self.information_axis.text(
-            0.0,
-            1.0,
-            information,
-            va="top",
-            ha="left",
-            fontsize=10.0,
-            linespacing=1.25,
-            transform=self.information_axis.transAxes,
-        )
-
-    def _toggle_pause(
-        self,
-        event=None,
-    ) -> None:
-        """Pause or resume the animation."""
-
-        if self.result is None:
-            return
-
-        self.paused = not self.paused
-
-        self.pause_button.label.set_text(
-            "Resume"
-            if self.paused
-            else "Pause"
-        )
-
-        self.figure.canvas.draw_idle()
 
     def _replay(
         self,
@@ -5287,6 +5588,1923 @@ class NavigationDemo:
             fontsize=11,
             wrap=True,
             transform=self.navigation_axis.transAxes,
+        )
+
+        self.figure.canvas.draw_idle()
+
+
+
+    # ================================================================
+    # STATIC POLICY OBSTACLE IMPLEMENTATION - SUPERVISOR METHOD
+    # ================================================================
+    #
+    # This implementation intentionally overrides the earlier
+    # moving-obstacle methods without changing the existing UI.
+    #
+    # OBSTACLE OFF:
+    #     Existing classifier-generated navigation is preserved.
+    #
+    # OBSTACLE ON:
+    #     1. Build the normal optimal navigation policy.
+    #     2. Randomly select one meaningful cell from that route.
+    #     3. Mark that cell as a permanently blocked static obstacle.
+    #     4. Re-evaluate the policy with that state unavailable.
+    #     5. Follow the resulting optimal obstacle-aware policy.
+    #
+    # The obstacle is generated once at the start of each run and
+    # remains stationary for the entire demonstration.
+    # ================================================================
+
+    def _policy_action(
+        self,
+        current,
+        next_state,
+    ) -> str:
+        """Convert a policy transition into a readable action."""
+
+        dr = next_state[0] - current[0]
+        dc = next_state[1] - current[1]
+
+        if dr == -1 and dc == 0:
+            return "UP"
+
+        if dr == 1 and dc == 0:
+            return "DOWN"
+
+        if dr == 0 and dc == -1:
+            return "LEFT"
+
+        if dr == 0 and dc == 1:
+            return "RIGHT"
+
+        return "STOP"
+
+
+    def _build_static_policy(
+        self,
+        blocked_cells=None,
+    ):
+        """
+        Build the supervisor-style complete State -> Action table.
+
+        The environment is fully evaluated BEFORE movement begins.
+
+        For every reachable state:
+
+            (row, col) -> {
+                action,
+                next_state,
+                distance_to_target
+            }
+
+        The three X obstacle cells and their safety-clearance cells
+        are excluded from the table.
+
+        Breadth-first evaluation is performed backwards from Target,
+        which gives the shortest number of cell transitions.
+        """
+
+        if blocked_cells is None:
+            blocked_cells = set()
+
+        blocked_cells = {
+            tuple(cell)
+            for cell in blocked_cells
+        }
+
+        target = (
+            1,
+            self.grid_size - 2,
+        )
+
+        if target in blocked_cells:
+            raise RuntimeError(
+                "Target cannot be blocked."
+            )
+
+        queue = deque(
+            [target]
+        )
+
+        distance = {
+            target: 0
+        }
+
+        # --------------------------------------------------------
+        # IMPORTANT
+        # --------------------------------------------------------
+        #
+        # Evaluate the COMPLETE visible grid.
+        #
+        # Previous versions only evaluated cells 1..N-2 and this
+        # caused errors such as:
+        #
+        #     No safe policy action exists from state (0, 7)
+        #
+        # Every visible grid state is now represented.
+        # --------------------------------------------------------
+
+        directions = (
+            (-1, 0),   # UP
+            (0, 1),    # RIGHT
+            (1, 0),    # DOWN
+            (0, -1),   # LEFT
+        )
+
+        while queue:
+
+            current = queue.popleft()
+
+            for dr, dc in directions:
+
+                neighbour = (
+                    current[0] + dr,
+                    current[1] + dc,
+                )
+
+                row, col = neighbour
+
+                if not (
+                    0 <= row < self.grid_size
+                    and
+                    0 <= col < self.grid_size
+                ):
+                    continue
+
+                if neighbour in blocked_cells:
+                    continue
+
+                if neighbour in distance:
+                    continue
+
+                distance[neighbour] = (
+                    distance[current] + 1
+                )
+
+                queue.append(
+                    neighbour
+                )
+
+        # --------------------------------------------------------
+        # CONVERT VALUE/DISTANCE TABLE INTO STATE -> ACTION TABLE
+        # --------------------------------------------------------
+
+        policy = {}
+
+        policy[target] = {
+            "action": "TARGET",
+            "next_state": None,
+            "distance_to_target": 0,
+        }
+
+        for state, state_distance in distance.items():
+
+            if state == target:
+                continue
+
+            row, col = state
+
+            # ----------------------------------------------------
+            # SMOOTH DETERMINISTIC TIE BREAK
+            # ----------------------------------------------------
+            #
+            # Prefer movement generally toward Target.
+            # Among equal shortest choices this avoids unnecessary
+            # one-cell staircase behaviour.
+            # ----------------------------------------------------
+
+            preferred_directions = []
+
+            # Horizontal movement toward target.
+            if col < target[1]:
+
+                preferred_directions.append(
+                    (
+                        0,
+                        1,
+                        "RIGHT",
+                    )
+                )
+
+            elif col > target[1]:
+
+                preferred_directions.append(
+                    (
+                        0,
+                        -1,
+                        "LEFT",
+                    )
+                )
+
+            # Vertical movement toward target.
+            if row > target[0]:
+
+                preferred_directions.append(
+                    (
+                        -1,
+                        0,
+                        "UP",
+                    )
+                )
+
+            elif row < target[0]:
+
+                preferred_directions.append(
+                    (
+                        1,
+                        0,
+                        "DOWN",
+                    )
+                )
+
+            # Remaining directions provide obstacle detours.
+            for direction in (
+                (-1, 0, "UP"),
+                (0, 1, "RIGHT"),
+                (1, 0, "DOWN"),
+                (0, -1, "LEFT"),
+            ):
+
+                if direction not in preferred_directions:
+                    preferred_directions.append(
+                        direction
+                    )
+
+            chosen = None
+
+            for dr, dc, action in preferred_directions:
+
+                neighbour = (
+                    row + dr,
+                    col + dc,
+                )
+
+                if neighbour not in distance:
+                    continue
+
+                if (
+                    distance[neighbour]
+                    != state_distance - 1
+                ):
+                    continue
+
+                chosen = (
+                    action,
+                    neighbour,
+                )
+
+                break
+
+            if chosen is None:
+                continue
+
+            action, next_state = chosen
+
+            policy[state] = {
+                "action": action,
+                "next_state": next_state,
+                "distance_to_target": state_distance,
+            }
+
+        return policy
+
+
+
+    def _route_from_static_policy(
+        self,
+        policy,
+    ):
+        """
+        Follow the already pre-evaluated State -> Action table.
+
+        No reactive replanning occurs here.
+
+        Every table lookup gives exactly ONE neighbouring-cell action.
+        """
+
+        start = (
+            self.grid_size - 2,
+            1,
+        )
+
+        target = (
+            1,
+            self.grid_size - 2,
+        )
+
+        if start not in policy:
+
+            raise RuntimeError(
+                "Start state is not present "
+                "in the policy table."
+            )
+
+        route = [
+            start
+        ]
+
+        current = start
+
+        visited = {
+            start
+        }
+
+        safety_limit = (
+            self.grid_size
+            * self.grid_size
+            * 2
+        )
+
+        while current != target:
+
+            entry = policy.get(
+                current
+            )
+
+            if entry is None:
+
+                raise RuntimeError(
+                    "Policy table has no action "
+                    f"for state {current}."
+                )
+
+            next_state = entry.get(
+                "next_state"
+            )
+
+            if next_state is None:
+
+                raise RuntimeError(
+                    "Policy table stopped before Target."
+                )
+
+            next_state = tuple(
+                next_state
+            )
+
+            movement_distance = (
+                abs(
+                    next_state[0]
+                    - current[0]
+                )
+                +
+                abs(
+                    next_state[1]
+                    - current[1]
+                )
+            )
+
+            if movement_distance != 1:
+
+                raise RuntimeError(
+                    "Policy action is not exactly "
+                    "one grid-cell movement."
+                )
+
+            if next_state in visited:
+
+                raise RuntimeError(
+                    "Policy table created a loop."
+                )
+
+            route.append(
+                next_state
+            )
+
+            visited.add(
+                next_state
+            )
+
+            current = next_state
+
+            if len(route) > safety_limit:
+
+                raise RuntimeError(
+                    "Policy route exceeded safety limit."
+                )
+
+        return route
+
+
+
+    def _prepare_static_policy_obstacle(
+        self,
+    ) -> None:
+        """
+        Generate exactly three random static obstacle cells.
+
+        self.static_obstacle_positions is the ONLY authoritative
+        obstacle-state collection used by navigation and drawing.
+
+        Only actual X cells are blocked.
+        """
+
+        start = (
+            self.grid_size - 2,
+            1,
+        )
+
+        target = (
+            1,
+            self.grid_size - 2,
+        )
+
+        candidates = []
+
+        for row in range(
+            2,
+            self.grid_size - 2,
+        ):
+
+            for col in range(
+                2,
+                self.grid_size - 2,
+            ):
+
+                cell = (
+                    row,
+                    col,
+                )
+
+                if cell == start:
+                    continue
+
+                if cell == target:
+                    continue
+
+                # Keep a little space around Start and Target.
+                start_distance = (
+                    abs(
+                        row - start[0]
+                    )
+                    +
+                    abs(
+                        col - start[1]
+                    )
+                )
+
+                target_distance = (
+                    abs(
+                        row - target[0]
+                    )
+                    +
+                    abs(
+                        col - target[1]
+                    )
+                )
+
+                if start_distance <= 3:
+                    continue
+
+                if target_distance <= 3:
+                    continue
+
+                candidates.append(
+                    cell
+                )
+
+        if len(candidates) < 3:
+
+            raise RuntimeError(
+                "Not enough cells for three obstacles."
+            )
+
+        rng = np.random.default_rng()
+
+        selected = None
+        selected_policy = None
+
+        for _ in range(1000):
+
+            indices = rng.choice(
+                len(candidates),
+                size=3,
+                replace=False,
+            )
+
+            obstacles = [
+                tuple(
+                    candidates[
+                        int(index)
+                    ]
+                )
+                for index in indices
+            ]
+
+            # Three unique cells guaranteed by replace=False.
+            obstacle_set = set(
+                obstacles
+            )
+
+            if len(obstacle_set) != 3:
+                continue
+
+            # ====================================================
+            # POLICY BLOCKS EXACTLY THE SAME 3 CELLS WE DISPLAY
+            # ====================================================
+
+            policy = (
+                self._build_static_policy(
+                    blocked_cells=obstacle_set,
+                )
+            )
+
+            if start not in policy:
+                continue
+
+            # Verify Start -> Target using this table.
+            current = start
+            seen = set()
+
+            valid = True
+
+            for _ in range(
+                self.grid_size
+                * self.grid_size
+                * 2
+            ):
+
+                if current == target:
+                    break
+
+                if current in seen:
+                    valid = False
+                    break
+
+                seen.add(
+                    current
+                )
+
+                entry = policy.get(
+                    current
+                )
+
+                if entry is None:
+                    valid = False
+                    break
+
+                next_state = entry.get(
+                    "next_state"
+                )
+
+                if next_state is None:
+                    valid = False
+                    break
+
+                next_state = tuple(
+                    next_state
+                )
+
+                # POLICY ITSELF MUST NEVER ENTER X.
+                if next_state in obstacle_set:
+                    valid = False
+                    break
+
+                current = (
+                    next_state
+                )
+
+            if current != target:
+                valid = False
+
+            if not valid:
+                continue
+
+            selected = list(
+                obstacles
+            )
+
+            selected_policy = (
+                policy
+            )
+
+            break
+
+        if selected is None:
+
+            raise RuntimeError(
+                "Unable to generate a valid "
+                "three-obstacle policy."
+            )
+
+        # ========================================================
+        # SINGLE SOURCE OF TRUTH
+        # ========================================================
+
+        self.static_obstacle_positions = list(
+            selected
+        )
+
+        self.static_policy_blocked_cells = set(
+            self.static_obstacle_positions
+        )
+
+        self.obstacle_policy_table = (
+            selected_policy
+        )
+
+        # --------------------------------------------------------
+        # OLD SINGLE-OBSTACLE VARIABLES ARE DISPLAY COMPATIBILITY
+        # ONLY. NAVIGATION MUST NOT USE THEM.
+        # --------------------------------------------------------
+
+        self.static_obstacle_position = (
+            self.static_obstacle_positions[0]
+        )
+
+        self.moving_obstacle_position = None
+        self.moving_obstacle_path = []
+
+        print()
+        print("=" * 72)
+        print("THREE-X ENVIRONMENT CREATED")
+        print("=" * 72)
+
+        for number, obstacle in enumerate(
+            self.static_obstacle_positions,
+            start=1,
+        ):
+
+            print(
+                f"X{number}:",
+                obstacle,
+            )
+
+        print()
+
+        print(
+            "Navigation obstacle set:",
+            self.static_policy_blocked_cells,
+        )
+
+        print(
+            "Displayed X set == blocked X set:",
+            (
+                set(
+                    self.static_obstacle_positions
+                )
+                ==
+                self.static_policy_blocked_cells
+            ),
+        )
+
+        print(
+            "Policy evaluated before movement:",
+            "YES",
+        )
+
+        print("=" * 72)
+
+
+
+
+
+
+
+    def _set_obstacle_mode(
+        self,
+        enabled: bool,
+    ) -> None:
+        """
+        Toggle the three-static-X environment.
+        """
+
+        if getattr(
+            self,
+            "run_active",
+            False,
+        ):
+            return
+
+        try:
+
+            if enabled:
+
+                # Generate exactly three Xs first.
+                self._prepare_static_policy_obstacle()
+
+                obstacles = list(
+                    getattr(
+                        self,
+                        "static_obstacle_positions",
+                        [],
+                    )
+                )
+
+                if len(obstacles) != 3:
+
+                    raise RuntimeError(
+                        "Expected exactly three static "
+                        f"obstacles, got {len(obstacles)}."
+                    )
+
+                # Only switch ON after successful generation.
+                self.obstacle_enabled = True
+
+                print()
+                print(
+                    "OBSTACLE MODE: ON"
+                )
+
+                print(
+                    "STATIC X COUNT:",
+                    len(obstacles),
+                )
+
+                self._draw_obstacle_preview()
+
+            else:
+
+                self.obstacle_enabled = False
+
+                self.static_obstacle_positions = []
+
+                self.static_obstacle_position = None
+
+                self.moving_obstacle_position = None
+                self.moving_obstacle_path = []
+
+                print()
+                print(
+                    "OBSTACLE MODE: OFF"
+                )
+
+                self._show_welcome_screen()
+
+        except Exception as error:
+
+            # If something genuinely goes wrong, keep OFF rather
+            # than leaving the UI in an inconsistent state.
+            self.obstacle_enabled = False
+
+            print()
+            print("=" * 72)
+            print("OBSTACLE TOGGLE ERROR")
+            print("=" * 72)
+            print(
+                type(error).__name__,
+                ":",
+                error,
+            )
+            print("=" * 72)
+
+            try:
+                self._show_error(
+                    str(error)
+                )
+            except Exception:
+                pass
+
+        self._update_obstacle_radio_style()
+
+        self.figure.canvas.draw_idle()
+
+
+
+
+    def _set_grid_size(
+        self,
+        grid_size: int,
+    ) -> None:
+        """
+        Select grid size while preserving the existing UI.
+
+        If obstacle mode is ON, regenerate a suitable static
+        obstacle for the newly selected grid.
+        """
+
+        if self.run_active:
+            return
+
+        self.grid_size = (
+            grid_size
+        )
+
+        self._update_button_styles()
+
+        if self.obstacle_enabled:
+
+            try:
+                self._prepare_static_policy_obstacle()
+                self._draw_obstacle_preview()
+
+            except Exception as error:
+                self._show_error(
+                    str(error)
+                )
+
+
+    def _draw_obstacle_preview(
+        self,
+    ) -> None:
+        """
+        Draw the selected grid with one permanent static X.
+        """
+
+        axis = self.navigation_axis
+        axis.clear()
+
+        axis.set_xlim(
+            -0.5,
+            self.grid_size - 0.5,
+        )
+
+        axis.set_ylim(
+            self.grid_size - 0.5,
+            -0.5,
+        )
+
+        axis.set_aspect(
+            "equal"
+        )
+
+        axis.set_xticks(
+            np.arange(
+                -0.5,
+                self.grid_size,
+                1,
+            ),
+            minor=True,
+        )
+
+        axis.set_yticks(
+            np.arange(
+                -0.5,
+                self.grid_size,
+                1,
+            ),
+            minor=True,
+        )
+
+        axis.grid(
+            which="minor",
+            linewidth=0.5,
+            alpha=0.45,
+        )
+
+        axis.tick_params(
+            which="both",
+            bottom=False,
+            left=False,
+            labelbottom=False,
+            labelleft=False,
+        )
+
+        start = (
+            self.grid_size - 2,
+            1,
+        )
+
+        target = (
+            1,
+            self.grid_size - 2,
+        )
+
+        axis.scatter(
+            start[1],
+            start[0],
+            marker="s",
+            s=130,
+            label="Start",
+        )
+
+        axis.scatter(
+            target[1],
+            target[0],
+            marker="*",
+            s=220,
+            label="Target",
+        )
+
+        if (
+            self.obstacle_enabled
+            and
+            self.static_obstacle_position
+            is not None
+        ):
+
+            row, col = (
+                self.static_obstacle_position
+            )
+
+            axis.scatter(
+                col,
+                row,
+                marker="X",
+                s=300,
+                color="red",
+                linewidths=2.2,
+                label="Obstacle",
+                zorder=10,
+            )
+
+        axis.set_title(
+            f"{self.grid_size} × "
+            f"{self.grid_size} grid",
+            fontsize=16,
+            pad=12,
+        )
+
+        axis.legend(
+            loc="upper center",
+            bbox_to_anchor=(
+                0.5,
+                -0.03,
+            ),
+            ncol=3,
+        )
+
+
+        # Use the same cell-centred coordinate convention.
+        self._apply_cell_centred_grid(
+            axis
+        )
+
+        self.figure.canvas.draw_idle()
+
+
+
+    # ================================================================
+    # PHYSICAL GRID STEP NORMALISATION
+    # ================================================================
+
+    def _normalise_physical_grid_path(
+        self,
+        path,
+    ):
+        """
+        Convert the trajectory into physical grid movements.
+
+        Navigation rule:
+
+            one movement to one adjacent grid cell = one step
+
+        Consecutive duplicate positions represent no physical
+        wheelchair movement and therefore must not create another
+        navigation step.
+
+        IMPORTANT:
+        Non-consecutive revisits are preserved. Therefore classifier
+        mistakes, backtracking, loops and inefficient navigation
+        remain visible.
+        """
+
+        if not path:
+            return []
+
+        positions = [
+            tuple(position)
+            for position in path
+        ]
+
+        normalised = [
+            positions[0]
+        ]
+
+        removed_stationary_frames = 0
+
+        for position in positions[1:]:
+
+            # Same physical cell -> no navigation movement.
+            if position == normalised[-1]:
+
+                removed_stationary_frames += 1
+
+                continue
+
+            normalised.append(
+                position
+            )
+
+        print()
+        print("=" * 72)
+        print("PHYSICAL GRID STEP NORMALISATION")
+        print("=" * 72)
+
+        print(
+            "Original trajectory frames:",
+            len(positions),
+        )
+
+        print(
+            "Stationary duplicate frames removed:",
+            removed_stationary_frames,
+        )
+
+        print(
+            "Physical navigation steps:",
+            max(
+                0,
+                len(normalised) - 1,
+            ),
+        )
+
+        print(
+            "Rule:",
+            "1 grid-cell transition = 1 step",
+        )
+
+        print(
+            "Wrong moves / loops preserved:",
+            "YES",
+        )
+
+        print("=" * 72)
+
+        return normalised
+
+
+
+    # ================================================================
+    # EXACT GRID-STATE COMMAND AUDIT
+    # ================================================================
+
+    def _audit_grid_path(
+        self,
+        path,
+    ) -> None:
+        """
+        Diagnostic only.
+
+        Proves whether the trajectory contains:
+            - duplicate consecutive states,
+            - movements larger than one cell,
+            - diagonal movements,
+            - immediate A -> B -> A reversals.
+
+        This function DOES NOT modify the path.
+        """
+
+        positions = [
+            tuple(position)
+            for position in path
+        ]
+
+        print()
+        print("=" * 72)
+        print("EXACT GRID-STATE COMMAND AUDIT")
+        print("=" * 72)
+
+        print(
+            "Stored states:",
+            len(positions),
+        )
+
+        duplicate_states = []
+        invalid_moves = []
+        reversals = []
+
+        action_names = {
+            (-1, 0): "UP",
+            (1, 0): "DOWN",
+            (0, -1): "LEFT",
+            (0, 1): "RIGHT",
+            (0, 0): "STAY",
+        }
+
+        for index in range(
+            1,
+            len(positions),
+        ):
+
+            previous = positions[
+                index - 1
+            ]
+
+            current = positions[
+                index
+            ]
+
+            dr = (
+                current[0]
+                - previous[0]
+            )
+
+            dc = (
+                current[1]
+                - previous[1]
+            )
+
+            distance = (
+                abs(dr)
+                +
+                abs(dc)
+            )
+
+            action = action_names.get(
+                (dr, dc),
+                f"INVALID({dr},{dc})",
+            )
+
+            print(
+                f"STEP {index:03d}: "
+                f"{previous} -> "
+                f"{action} -> "
+                f"{current}"
+            )
+
+            # Same state stored twice.
+            if distance == 0:
+
+                duplicate_states.append(
+                    (
+                        index,
+                        previous,
+                        current,
+                    )
+                )
+
+            # Anything except exactly one cardinal cell.
+            elif distance != 1:
+
+                invalid_moves.append(
+                    (
+                        index,
+                        previous,
+                        current,
+                        dr,
+                        dc,
+                    )
+                )
+
+            # Immediate A -> B -> A.
+            if index >= 2:
+
+                if (
+                    positions[index]
+                    ==
+                    positions[index - 2]
+                ):
+
+                    reversals.append(
+                        (
+                            index - 1,
+                            positions[index - 2],
+                            positions[index - 1],
+                            positions[index],
+                        )
+                    )
+
+        print()
+        print("-" * 72)
+
+        print(
+            "Consecutive duplicate states:",
+            len(
+                duplicate_states
+            ),
+        )
+
+        print(
+            "Invalid / multi-cell moves:",
+            len(
+                invalid_moves
+            ),
+        )
+
+        print(
+            "Immediate A-B-A reversals:",
+            len(
+                reversals
+            ),
+        )
+
+        print()
+
+        if duplicate_states:
+
+            print(
+                "DUPLICATE STATE DETAILS:"
+            )
+
+            for item in duplicate_states:
+
+                print(
+                    item
+                )
+
+        if invalid_moves:
+
+            print()
+            print(
+                "INVALID MOVE DETAILS:"
+            )
+
+            for item in invalid_moves:
+
+                print(
+                    item
+                )
+
+        if reversals:
+
+            print()
+            print(
+                "REVERSAL DETAILS:"
+            )
+
+            for item in reversals:
+
+                print(
+                    item
+                )
+
+        print()
+        print("=" * 72)
+
+        if (
+            not duplicate_states
+            and
+            not invalid_moves
+        ):
+
+            print(
+                "RESULT: Every stored physical action "
+                "moves exactly one neighbouring grid cell."
+            )
+
+            print(
+                "Therefore an L-shaped corner represents "
+                "two consecutive commands from two states, "
+                "NOT two commands executed in one state."
+            )
+
+        else:
+
+            print(
+                "RESULT: PATH REPRESENTATION PROBLEM FOUND."
+            )
+
+        print("=" * 72)
+    def _play_current_policy_result(
+        self,
+    ) -> None:
+        """
+        Play the currently prepared navigation path.
+
+        No obstacle motion, interception, local bypass or
+        reactive replanning occurs during playback.
+
+        The route has already been evaluated before movement.
+        """
+
+        if self.result is None:
+            return
+
+        # --------------------------------------------------------
+        # PHYSICAL NAVIGATION STEP RULE
+        # --------------------------------------------------------
+        #
+        # One adjacent grid-cell movement equals one navigation
+        # step. Remaining in the same cell does not consume a
+        # physical wheelchair step.
+        #
+        # Wrong classifier movements and revisits are preserved.
+        self.result.path = (
+            self._normalise_physical_grid_path(
+                self.result.path
+            )
+        )
+
+        # Audit exact physical grid transitions before animation.
+        self._audit_grid_path(
+            self.result.path
+        )
+
+        self.current_frame = 0
+        self.paused = False
+        self.run_active = True
+
+        self.pause_button.label.set_text(
+            "Pause"
+        )
+
+        self._draw_frame()
+        self.figure.canvas.draw_idle()
+
+        last_frame = (
+            len(self.result.path) - 1
+        )
+
+        while (
+            self.run_active
+            and
+            self.result is not None
+            and
+            self.current_frame < last_frame
+        ):
+
+            while (
+                self.paused
+                and
+                self.run_active
+                and
+                self.result is not None
+            ):
+                plt.pause(
+                    0.05
+                )
+
+            if (
+                not self.run_active
+                or
+                self.result is None
+            ):
+                return
+
+            next_frame = (
+                self.current_frame + 1
+            )
+
+            if (
+                next_frame
+                >= len(
+                    self.result.path
+                )
+            ):
+                break
+
+            next_position = (
+                self.result.path[
+                    next_frame
+                ]
+            )
+
+            # Absolute collision guard.
+            if (
+                self.obstacle_enabled
+                and
+                self.static_obstacle_position
+                is not None
+                and
+                next_position
+                == self.static_obstacle_position
+            ):
+
+                print()
+                print("=" * 72)
+                print(
+                    "POLICY SAFETY ERROR:"
+                )
+                print(
+                    "Blocked state was encountered."
+                )
+                print(
+                    "Wheelchair remains stationary."
+                )
+                print("=" * 72)
+
+                self.run_active = False
+
+                self._draw_frame()
+
+                return
+
+            self.current_frame = (
+                next_frame
+            )
+
+            self._draw_frame()
+
+            plt.pause(
+                max(
+                    FRAME_INTERVAL_MS
+                    / 1000.0,
+                    0.001,
+                )
+            )
+
+        if self.result is not None:
+
+            last_frame = (
+                len(
+                    self.result.path
+                ) - 1
+            )
+
+            if (
+                self.current_frame
+                >= last_frame
+            ):
+
+                self.current_frame = (
+                    last_frame
+                )
+
+                self._draw_frame()
+
+        self.run_active = False
+        self.paused = False
+
+        self.pause_button.label.set_text(
+            "Pause"
+        )
+
+        self.figure.canvas.draw_idle()
+
+
+
+
+    def _replay(
+        self,
+        event=None,
+    ) -> None:
+        """
+        Replay the exact same completed route.
+
+        A new random obstacle is generated only when the user
+        deliberately presses Run demonstration again.
+        """
+
+        if self.result is None:
+            self._run_demo()
+            return
+
+        if self.run_active:
+            return
+
+        self._play_current_policy_result()
+
+
+    def _update_result_information(
+        self,
+    ) -> None:
+        """
+        Display navigation completion from the route actually shown.
+        """
+
+        if self.result is None:
+            return
+
+        last_frame = (
+            len(
+                self.result.path
+            ) - 1
+        )
+
+        animation_complete = (
+            self.current_frame
+            >= last_frame
+        )
+
+        current_position = (
+            self.result.path[
+                min(
+                    self.current_frame,
+                    last_frame,
+                )
+            ]
+        )
+
+        actually_reached_target = (
+            animation_complete
+            and
+            current_position
+            == self.result.target
+        )
+
+        if animation_complete:
+
+            status = (
+                "NAVIGATION COMPLETE"
+            )
+
+            reached = (
+                "YES"
+                if actually_reached_target
+                else "NO"
+            )
+
+        else:
+
+            status = (
+                "NAVIGATION IN PROGRESS"
+            )
+
+            reached = (
+                "In progress"
+            )
+
+        information = (
+            f"{status}\n"
+            f"Step: {self.current_frame} / "
+            f"{last_frame}\n"
+            f"Reached target: {reached}"
+        )
+
+        self.information_axis.clear()
+
+        self.information_axis.axis(
+            "off"
+        )
+
+        self.information_axis.text(
+            0.0,
+            1.0,
+            information,
+            va="top",
+            ha="left",
+            fontsize=10.0,
+            linespacing=1.25,
+            transform=(
+                self.information_axis.transAxes
+            ),
+        )
+
+
+    # ============================================================
+    # RESTORED ORIGINAL METHODS FROM SAFETY BACKUP
+    # ============================================================
+
+    def _advance_frame(self) -> None:
+        """Legacy callback retained for compatibility."""
+        return
+
+
+    # ================================================================
+    # CELL-CENTRED GRID RENDERING
+    # ================================================================
+
+    def _apply_cell_centred_grid(
+        self,
+        axis,
+    ) -> None:
+        """
+        Render integer navigation states at the CENTRE of grid cells.
+
+        Internal state representation is unchanged:
+
+            (row, col)
+
+        Only the visual grid boundaries move to half-integer
+        coordinates:
+
+            -0.5, 0.5, 1.5, 2.5, ...
+
+        Therefore integer positions:
+
+            0, 1, 2, 3, ...
+
+        become cell centres.
+
+        This keeps:
+            classifier logic,
+            policy-table logic,
+            obstacle coordinates,
+            Start/Target coordinates
+
+        completely unchanged.
+        """
+
+        size = int(
+            self.grid_size
+        )
+
+        # --------------------------------------------------------
+        # INTEGER POSITIONS ARE CELL CENTRES
+        # --------------------------------------------------------
+
+        axis.set_xlim(
+            -0.5,
+            size - 0.5,
+        )
+
+        # Preserve the current navigation orientation:
+        # row 0 at the top of the displayed grid.
+        axis.set_ylim(
+            size - 0.5,
+            -0.5,
+        )
+
+        # --------------------------------------------------------
+        # REMOVE GRID LINES THROUGH THE STATE CENTRES
+        # --------------------------------------------------------
+
+        axis.grid(
+            False,
+            which="major",
+        )
+
+        # Major ticks remain at integer state centres.
+        axis.set_xticks(
+            range(size)
+        )
+
+        axis.set_yticks(
+            range(size)
+        )
+
+        # --------------------------------------------------------
+        # CELL BOUNDARIES ARE HALF-INTEGERS
+        # --------------------------------------------------------
+
+        boundaries = [
+            value - 0.5
+            for value in range(
+                size + 1
+            )
+        ]
+
+        axis.set_xticks(
+            boundaries,
+            minor=True,
+        )
+
+        axis.set_yticks(
+            boundaries,
+            minor=True,
+        )
+
+        axis.grid(
+            True,
+            which="minor",
+            linewidth=0.6,
+            alpha=0.30,
+        )
+
+        # Do not show numerical tick labels in the demonstration.
+        axis.tick_params(
+            axis="both",
+            which="both",
+            bottom=False,
+            left=False,
+            labelbottom=False,
+            labelleft=False,
+        )
+
+        # Keep cells visually square.
+        axis.set_aspect(
+            "equal",
+            adjustable="box",
+        )
+
+    def _draw_frame(
+        self,
+    ) -> None:
+        """
+        Draw the current wheelchair frame with all static obstacles.
+        """
+
+        if self.result is None:
+            return
+
+        axis = self.navigation_axis
+        axis.clear()
+
+        axis.set_xlim(
+            -0.5,
+            self.grid_size - 0.5,
+        )
+
+        axis.set_ylim(
+            self.grid_size - 0.5,
+            -0.5,
+        )
+
+        axis.set_aspect("equal")
+
+        axis.set_xticks(
+            np.arange(
+                -0.5,
+                self.grid_size,
+                1,
+            ),
+            minor=True,
+        )
+
+        axis.set_yticks(
+            np.arange(
+                -0.5,
+                self.grid_size,
+                1,
+            ),
+            minor=True,
+        )
+
+        axis.grid(
+            which="minor",
+            linewidth=0.5,
+            alpha=0.45,
+        )
+
+        axis.tick_params(
+            which="both",
+            bottom=False,
+            left=False,
+            labelbottom=False,
+            labelleft=False,
+        )
+
+        last_index = min(
+            self.current_frame,
+            len(self.result.path) - 1,
+        )
+
+        visible_path = self.result.path[
+            :last_index + 1
+        ]
+
+        rows = [
+            position[0]
+            for position in visible_path
+        ]
+
+        cols = [
+            position[1]
+            for position in visible_path
+        ]
+
+        axis.plot(
+            cols,
+            rows,
+            linewidth=2.0,
+            label="Wheelchair path",
+        )
+
+        # ========================================================
+        # GRID STATE DOT VISUALISATION
+        # ========================================================
+        #
+        # Every dot is one discrete wheelchair grid state.
+        # Every line segment between dots is one physical command.
+        #
+        # Example:
+        #
+        #     ● ---- ●
+        #            |
+        #            ●
+        #
+        # The corner state is shared by the incoming and outgoing
+        # segments, but only one new command leaves that state.
+        # ========================================================
+
+        if axis.lines:
+
+            wheelchair_line = axis.lines[-1]
+
+            wheelchair_line.set_marker(
+                "o"
+            )
+
+            wheelchair_line.set_markersize(
+                4.5
+            )
+
+            wheelchair_line.set_markerfacecolor(
+                "white"
+            )
+
+            wheelchair_line.set_markeredgewidth(
+                1.2
+            )
+
+
+        start = tuple(
+            self.result.start_state.position
+        )
+
+        target = tuple(
+            self.result.target
+        )
+
+        current = tuple(
+            visible_path[-1]
+        )
+
+        axis.scatter(
+            start[1],
+            start[0],
+            marker="s",
+            s=130,
+            label="Start",
+            zorder=10,
+        )
+
+        axis.scatter(
+            target[1],
+            target[0],
+            marker="*",
+            s=220,
+            label="Target",
+            zorder=10,
+        )
+
+        axis.scatter(
+            current[1],
+            current[0],
+            marker="o",
+            s=150,
+            label="Wheelchair",
+            zorder=11,
+        )
+
+        # ====================================================
+        # DRAW EXACTLY THREE STATIC Xs
+        # ====================================================
+
+        if self.obstacle_enabled:
+
+            obstacles = list(
+                getattr(
+                    self,
+                    "static_obstacle_positions",
+                    [],
+                )
+            )
+
+            print(
+                "DRAWING STATIC OBSTACLES:",
+                obstacles,
+            )
+
+            if len(obstacles) >= 3:
+
+                obstacles = obstacles[:3]
+
+                obstacle_rows = [
+                    position[0]
+                    for position in obstacles
+                ]
+
+                obstacle_cols = [
+                    position[1]
+                    for position in obstacles
+                ]
+
+                axis.scatter(
+                    obstacle_cols,
+                    obstacle_rows,
+                    marker="X",
+                    s=300,
+                    color="red",
+                    linewidths=2.2,
+                    label="Obstacles",
+                    zorder=20,
+                )
+
+            elif obstacles:
+
+                # Diagnostic fallback only.
+                obstacle_rows = [
+                    position[0]
+                    for position in obstacles
+                ]
+
+                obstacle_cols = [
+                    position[1]
+                    for position in obstacles
+                ]
+
+                axis.scatter(
+                    obstacle_cols,
+                    obstacle_rows,
+                    marker="X",
+                    s=300,
+                    color="red",
+                    linewidths=2.2,
+                    label="Obstacles",
+                    zorder=20,
+                )
+
+        axis.set_title(
+            f"{self.grid_size} × {self.grid_size} grid"
+            f"   |   Step {self.current_frame}",
+            fontsize=16,
+            pad=12,
+        )
+
+        axis.legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.03),
+            ncol=4,
+        )
+
+        self._update_result_information()
+
+
+        # Render integer wheelchair/obstacle states at cell centres.
+        self._apply_cell_centred_grid(
+            axis
+        )
+
+        self.figure.canvas.draw_idle()
+
+
+    def _toggle_pause(
+        self,
+        event=None,
+    ) -> None:
+        """Pause or resume the animation."""
+
+        if self.result is None:
+            return
+
+        self.paused = not self.paused
+
+        self.pause_button.label.set_text(
+            "Resume"
+            if self.paused
+            else "Pause"
         )
 
         self.figure.canvas.draw_idle()
